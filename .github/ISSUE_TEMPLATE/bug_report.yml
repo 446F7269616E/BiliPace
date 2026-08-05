@@ -1,0 +1,35 @@
+name: Bug report
+description: Report a reproducible BiliFocus problem without personal data.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not post vulnerabilities or personal browsing data. Follow SECURITY.md for private security reports.
+  - type: input
+    id: version
+    attributes:
+      label: BiliFocus version
+      placeholder: 0.1.0
+    validations:
+      required: true
+  - type: dropdown
+    id: browser
+    attributes:
+      label: Browser
+      options: [Chrome, Edge, Other Chromium, Firefox, Safari macOS, Safari iOS/iPadOS]
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Remove account names, titles, IDs, URL parameters and other personal data.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual result
+    validations:
+      required: true

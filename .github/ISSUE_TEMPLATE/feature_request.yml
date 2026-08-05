@@ -1,0 +1,24 @@
+name: Feature request
+description: Propose an improvement within BiliFocus's local-first focus purpose.
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What focus or local insight problem should this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed experience
+    validations:
+      required: true
+  - type: checkboxes
+    id: impact
+    attributes:
+      label: Data and permissions
+      options:
+        - label: This proposal does not require a new site, account, telemetry or remote service.

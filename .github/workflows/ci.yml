@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Check formatting
+        run: npm run format:check
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Run unit tests
+        run: npm run test:coverage
+
+      - name: Build all browser targets
+        run: npm run build
+
+      - name: Upload browser artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bilifocus-browser-builds
+          path: |
+            dist/chromium
+            dist/firefox
+            dist/safari
+          if-no-files-found: error
+          retention-days: 7

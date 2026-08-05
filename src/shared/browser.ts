@@ -1,0 +1,236 @@
+/**
+ * Minimal WebExtensions compatibility layer. It deliberately uses the common
+ * browser/chrome API subset and hides Firefox Promise vs Chromium callback APIs.
+ */
+
+export interface ExtensionEvent<Listener extends (...args: never[]) => unknown> {
+  addListener(listener: Listener): void;
+  removeListener?(listener: Listener): void;
+}
+
+export interface StorageAreaLike {
+  get(
+    keys?: string | string[] | Record<string, unknown> | null,
+    callback?: (items: Record<string, unknown>) => void
+  ): unknown;
+  set(items: Record<string, unknown>, callback?: () => void): unknown;
+  remove?(keys: string | string[], callback?: () => void): unknown;
+}
+
+export interface ExtensionTab {
+  id?: number;
+  active?: boolean;
+  windowId?: number;
+  url?: string;
+}
+
+export interface ExtensionMessageSender {
+  id?: string;
+  url?: string;
+  tab?: ExtensionTab;
+}
+
+export interface ExtensionApi {
+  runtime: {
+    id?: string;
+    lastError?: { message?: string };
+    sendMessage(message: unknown, callback?: (response: unknown) => void): unknown;
+    getURL?(path: string): string;
+    openOptionsPage?(callback?: () => void): unknown;
+    onMessage: ExtensionEvent<
+      (
+        message: unknown,
+        sender: ExtensionMessageSender,
+        sendResponse: (response: unknown) => void
+      ) => boolean | void | Promise<unknown>
+    >;
+  };
+  storage: {
+    local: StorageAreaLike;
+    sync?: StorageAreaLike;
+  };
+  tabs?: {
+    query(queryInfo: Record<string, unknown>, callback?: (tabs: ExtensionTab[]) => void): unknown;
+    get?(tabId: number, callback?: (tab: ExtensionTab) => void): unknown;
+    onActivated?: ExtensionEvent<(activeInfo: { tabId: number; windowId: number }) => void>;
+    onUpdated?: ExtensionEvent<
+      (tabId: number, changeInfo: { url?: string; status?: string }, tab: ExtensionTab) => void
+    >;
+    onRemoved?: ExtensionEvent<(tabId: number) => void>;
+  };
+  windows?: {
+    WINDOW_ID_NONE?: number;
+    onFocusChanged?: ExtensionEvent<(windowId: number) => void>;
+  };
+  idle?: {
+    setDetectionInterval?(seconds: number): void;
+    queryState?(seconds: number, callback?: (state: "active" | "idle" | "locked") => void): unknown;
+    onStateChanged?: ExtensionEvent<(state: "active" | "idle" | "locked") => void>;
+  };
+}
+
+type ApiMode = "promise" | "callback";
+
+interface ApiContext {
+  api: ExtensionApi;
+  mode: ApiMode;
+}
+
+export function getExtensionApi(): ExtensionApi | null {
+  return getApiContext()?.api ?? null;
+}
+
+export function getSettingsStorageArea(): StorageAreaLike {
+  return requireApi().storage.local;
+}
+
+export function getLocalStorageArea(): StorageAreaLike {
+  return requireApi().storage.local;
+}
+
+export async function storageGet(
+  area: StorageAreaLike,
+  keys?: string | string[] | Record<string, unknown> | null
+): Promise<Record<string, unknown>> {
+  const context = requireContext();
+  if (context.mode === "promise") {
+    return (await area.get(keys)) as Record<string, unknown>;
+  }
+  return callbackResult<Record<string, unknown>>((resolve) => area.get(keys, resolve));
+}
+
+export async function storageSet(
+  area: StorageAreaLike,
+  items: Record<string, unknown>
+): Promise<void> {
+  const context = requireContext();
+  if (context.mode === "promise") {
+    await area.set(items);
+    return;
+  }
+  await callbackVoid((resolve) => area.set(items, resolve));
+}
+
+export async function storageRemove(area: StorageAreaLike, keys: string | string[]): Promise<void> {
+  if (!area.remove) return;
+  const context = requireContext();
+  if (context.mode === "promise") {
+    await area.remove(keys);
+    return;
+  }
+  await callbackVoid((resolve) => area.remove?.(keys, resolve));
+}
+
+export async function runtimeSendMessage<T>(message: unknown): Promise<T> {
+  const context = requireContext();
+  if (context.mode === "promise") return (await context.api.runtime.sendMessage(message)) as T;
+  return callbackResult<T>((resolve) =>
+    context.api.runtime.sendMessage(message, (response) => resolve(response as T))
+  );
+}
+
+/**
+ * Registers one async handler using the native contract of each WebExtensions
+ * implementation. Firefox and Safari consume the returned Promise; Chromium
+ * requires the callback channel to remain open synchronously.
+ */
+export function runtimeAddMessageListener(
+  handler: (message: unknown, sender: ExtensionMessageSender) => Promise<unknown>
+): void {
+  const context = requireContext();
+  if (context.mode === "promise") {
+    context.api.runtime.onMessage.addListener((message, sender) => handler(message, sender));
+    return;
+  }
+  context.api.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    void handler(message, sender).then(sendResponse, () => sendResponse(undefined));
+    return true;
+  });
+}
+
+export function runtimeGetURL(path: string): string {
+  const runtime = requireContext().api.runtime;
+  if (!runtime.getURL) return path;
+  return runtime.getURL(path);
+}
+
+export async function runtimeOpenOptionsPage(): Promise<void> {
+  const context = requireContext();
+  const runtime = context.api.runtime;
+  if (!runtime.openOptionsPage) {
+    throw new Error("This browser does not expose an extension options page API");
+  }
+  if (context.mode === "promise") {
+    await runtime.openOptionsPage();
+    return;
+  }
+  await callbackVoid((resolve) => runtime.openOptionsPage?.(resolve));
+}
+
+export async function tabsQuery(queryInfo: Record<string, unknown>): Promise<ExtensionTab[]> {
+  const context = requireContext();
+  if (!context.api.tabs) return [];
+  if (context.mode === "promise")
+    return (await context.api.tabs.query(queryInfo)) as ExtensionTab[];
+  return callbackResult<ExtensionTab[]>((resolve) => context.api.tabs?.query(queryInfo, resolve));
+}
+
+export async function tabsGet(tabId: number): Promise<ExtensionTab | null> {
+  const context = requireContext();
+  const tabs = context.api.tabs;
+  if (!tabs?.get) return null;
+  if (context.mode === "promise") return (await tabs.get(tabId)) as ExtensionTab;
+  return callbackResult<ExtensionTab>((resolve) => tabs.get?.(tabId, resolve));
+}
+
+export async function idleQueryState(
+  detectionIntervalSeconds: number
+): Promise<"active" | "idle" | "locked" | "unsupported"> {
+  const context = requireContext();
+  const idle = context.api.idle;
+  if (!idle?.queryState) return "unsupported";
+  if (context.mode === "promise") {
+    return (await idle.queryState(detectionIntervalSeconds)) as "active" | "idle" | "locked";
+  }
+  return callbackResult<"active" | "idle" | "locked">((resolve) =>
+    idle.queryState?.(detectionIntervalSeconds, resolve)
+  );
+}
+
+function requireApi(): ExtensionApi {
+  return requireContext().api;
+}
+
+function requireContext(): ApiContext {
+  const context = getApiContext();
+  if (!context) throw new Error("WebExtensions API is unavailable in this context");
+  return context;
+}
+
+function getApiContext(): ApiContext | null {
+  const globals = globalThis as typeof globalThis & {
+    browser?: ExtensionApi;
+    chrome?: ExtensionApi;
+  };
+  if (globals.browser?.runtime && globals.browser.storage) {
+    return { api: globals.browser, mode: "promise" };
+  }
+  if (globals.chrome?.runtime && globals.chrome.storage) {
+    return { api: globals.chrome, mode: "callback" };
+  }
+  return null;
+}
+
+function callbackResult<T>(register: (resolve: (value: T) => void) => void): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    register((value) => {
+      const error = getExtensionApi()?.runtime.lastError;
+      if (error) reject(new Error(error.message || "WebExtensions API request failed"));
+      else resolve(value);
+    });
+  });
+}
+
+function callbackVoid(register: (resolve: () => void) => void): Promise<void> {
+  return callbackResult<void>((resolve) => register(() => resolve()));
+}

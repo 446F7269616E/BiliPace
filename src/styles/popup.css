@@ -1,0 +1,231 @@
+.popup-page {
+  width: 380px;
+  min-height: 520px;
+  background:
+    radial-gradient(
+      circle at 86% -6%,
+      color-mix(in srgb, var(--color-brand) 13%, transparent),
+      transparent 38%
+    ),
+    var(--color-canvas);
+}
+
+.popup-shell {
+  display: grid;
+  gap: var(--space-4);
+  padding: 18px;
+}
+
+.popup-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.popup-header .brand__mark {
+  width: 32px;
+  height: 32px;
+}
+
+.popup-header .btn--icon {
+  width: 36px;
+  min-height: 36px;
+}
+
+.today-card {
+  position: relative;
+  overflow: hidden;
+  padding: 22px;
+  color: #fff;
+  background: linear-gradient(138deg, #c9336b 0%, #ed5a8e 54%, #f77ea5 100%);
+  border: 0;
+  box-shadow: 0 13px 30px rgb(194 41 96 / 23%);
+}
+
+.today-card::after {
+  position: absolute;
+  right: -28px;
+  bottom: -58px;
+  width: 150px;
+  height: 150px;
+  content: "";
+  border: 22px solid rgb(255 255 255 / 9%);
+  border-radius: 50%;
+}
+
+.today-card__label {
+  position: relative;
+  z-index: 1;
+  color: rgb(255 255 255 / 76%);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+}
+
+.today-card__time {
+  position: relative;
+  z-index: 1;
+  margin-top: 4px;
+  font-size: 34px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 780;
+  letter-spacing: -0.045em;
+  line-height: 1.12;
+}
+
+.today-card__meta {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: 11px;
+  color: rgb(255 255 255 / 82%);
+  font-size: 12px;
+}
+
+.today-card__meta .icon {
+  width: 15px;
+  height: 15px;
+}
+
+.focus-control {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: 16px;
+}
+
+.focus-control__title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.focus-control__icon {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  color: var(--color-success);
+  background: var(--color-success-soft);
+  border-radius: 12px;
+}
+
+.focus-control[data-active="false"] .focus-control__icon {
+  color: var(--color-text-muted);
+  background: var(--color-surface-soft);
+}
+
+.focus-control strong {
+  display: block;
+  font-size: 14px;
+}
+
+.focus-control small {
+  color: var(--color-text-muted);
+  font-size: 11px;
+}
+
+.page-policy {
+  overflow: hidden;
+}
+
+.page-policy__body {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+}
+
+.page-policy__icon {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  color: var(--color-text-muted);
+  background: var(--color-surface-soft);
+  border-radius: 12px;
+}
+
+.page-policy[data-status="blocked"] .page-policy__icon {
+  color: var(--color-danger);
+  background: var(--color-danger-soft);
+}
+
+.page-policy[data-status="allowed"] .page-policy__icon {
+  color: var(--color-success);
+  background: var(--color-success-soft);
+}
+
+.page-policy__copy {
+  min-width: 0;
+}
+
+.page-policy__copy strong,
+.page-policy__copy span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.page-policy__copy strong {
+  font-size: 13px;
+}
+
+.page-policy__copy span {
+  margin-top: 2px;
+  color: var(--color-text-muted);
+  font-size: 11px;
+}
+
+.page-policy__action {
+  padding: 7px 10px;
+  font-size: 11px;
+}
+
+.page-policy__notice {
+  padding: 10px 16px;
+  color: var(--color-warning);
+  background: var(--color-warning-soft);
+  border-top: 1px solid color-mix(in srgb, var(--color-warning) 16%, transparent);
+  font-size: 11px;
+}
+
+.popup-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+}
+
+.popup-actions .btn {
+  min-height: 44px;
+}
+
+.popup-actions__plan {
+  grid-column: 1 / -1;
+}
+
+.popup-footer {
+  color: var(--color-text-faint);
+  font-size: 10px;
+  text-align: center;
+}
+
+.popup-error {
+  margin-top: 72px;
+}
+
+@media (max-width: 359px) {
+  .popup-page {
+    width: 100vw;
+  }
+
+  .popup-shell {
+    padding: 14px;
+  }
+}
