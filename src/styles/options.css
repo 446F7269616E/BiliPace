@@ -200,6 +200,107 @@
   gap: var(--space-8);
 }
 
+.content-filter-card {
+  display: grid;
+  gap: var(--space-5);
+  padding: var(--space-5);
+}
+
+.content-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.content-filter-item {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: 14px;
+  background: var(--color-surface-soft);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.content-filter-item--wide {
+  background: color-mix(in srgb, var(--color-accent-soft) 54%, var(--color-surface));
+}
+
+.content-filter-item strong,
+.video-card-filter strong {
+  font-size: 13px;
+}
+
+.content-filter-item p,
+.video-card-filter p {
+  margin-top: 3px;
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.video-card-filter {
+  display: grid;
+  gap: var(--space-4);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--color-border);
+}
+
+.content-filter-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4);
+}
+
+.content-filter-textarea {
+  min-height: 118px;
+  resize: vertical;
+  line-height: 1.6;
+}
+
+.section-card > summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+.section-card > summary::-webkit-details-marker {
+  display: none;
+}
+
+.section-card__summary-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.section-card__summary {
+  color: var(--color-text-muted);
+  font-size: 11px;
+  font-weight: 620;
+  white-space: nowrap;
+}
+
+.section-card__chevron {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  color: var(--color-text-muted);
+  background: var(--color-surface-soft);
+  border-radius: 9px;
+}
+
+.section-card__chevron .icon {
+  width: 15px;
+  height: 15px;
+  transition: transform var(--duration-base) var(--ease-out);
+}
+
+.section-card[open] .section-card__chevron .icon {
+  transform: rotate(90deg);
+}
+
 .master-card {
   display: flex;
   align-items: center;
@@ -670,8 +771,14 @@
     padding: var(--space-4);
   }
 
+  .section-card__summary {
+    display: none;
+  }
+
   .limit-row,
-  .access-fields {
+  .access-fields,
+  .content-filter-grid,
+  .content-filter-fields {
     grid-template-columns: 1fr;
     gap: var(--space-3);
   }

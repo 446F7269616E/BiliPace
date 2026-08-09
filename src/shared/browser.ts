@@ -17,6 +17,11 @@ export interface StorageAreaLike {
   remove?(keys: string | string[], callback?: () => void): unknown;
 }
 
+export interface StorageChangeLike {
+  oldValue?: unknown;
+  newValue?: unknown;
+}
+
 export interface ExtensionTab {
   id?: number;
   active?: boolean;
@@ -48,6 +53,9 @@ export interface ExtensionApi {
   storage: {
     local: StorageAreaLike;
     sync?: StorageAreaLike;
+    onChanged?: ExtensionEvent<
+      (changes: Record<string, StorageChangeLike>, areaName: string) => void
+    >;
   };
   tabs?: {
     query(queryInfo: Record<string, unknown>, callback?: (tabs: ExtensionTab[]) => void): unknown;
@@ -119,6 +127,15 @@ export async function storageRemove(area: StorageAreaLike, keys: string | string
     return;
   }
   await callbackVoid((resolve) => area.remove?.(keys, resolve));
+}
+
+export function storageAddChangeListener(
+  listener: (changes: Record<string, StorageChangeLike>, areaName: string) => void
+): () => void {
+  const event = requireContext().api.storage.onChanged;
+  if (!event) return () => undefined;
+  event.addListener(listener);
+  return () => event.removeListener?.(listener);
 }
 
 export async function runtimeSendMessage<T>(message: unknown): Promise<T> {

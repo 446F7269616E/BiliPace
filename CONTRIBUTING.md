@@ -24,7 +24,7 @@ npm run test:e2e
 - 领域逻辑与浏览器 API 解耦，新增平台差异放入 adapter/build 层。
 - 可复用逻辑模块化；对 URL/时间/storage/message 等外部输入做运行时验证。
 - UI 使用语义 HTML、可见焦点和明确 label；不得只用颜色表达状态。
-- 所有用户可见文案、隐私行为、权限和数据 schema 变更同步更新文档。
+- 所有用户可见文案必须通过 [UX writing 规范](./docs/UX_WRITING.md)；隐私行为、权限和数据 schema 变更同步更新文档。
 
 ## 提交变更
 

@@ -14,6 +14,7 @@
 - [ ] 完成 [QUALITY.md](./QUALITY.md) 的权限/远程代码/隐私门禁。
 - [ ] 完成 [MANUAL_ACCEPTANCE.md](./MANUAL_ACCEPTANCE.md)，附浏览器版本、截图/trace 和测试人。
 - [ ] 复测 Chrome 扩展页发送者识别：popup/options/dashboard/plan 在工具栏或普通标签页打开时均不会出现消息端口关闭或“暂时无法加载数据”。
+- [ ] 复测 popup/home/options/dashboard/plan 的共享导航、实时计时状态、用户文案与 BewlyBewly Shadow DOM 兼容。
 - [ ] 完成 [THREAT_MODEL.md](./THREAT_MODEL.md) 复核；所有高风险项已缓解或由维护者书面接受。
 - [ ] 从最终 zip/xpi/app 候选反向检查，而不是只检查源码目录。
 - [ ] 验证升级迁移、降级不损坏、清空数据和卸载。

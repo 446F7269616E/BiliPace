@@ -62,14 +62,18 @@ export class UsageTracker {
     return { stop: () => this.stop() };
   }
 
-  getStatus(): TrackingStatus {
+  async getStatus(): Promise<TrackingStatus> {
     const url = this.currentTab?.url ?? "";
     const section = classifyBilibiliUrl(url);
     const pageVisible =
       this.currentTab?.id !== undefined && this.visibleByTab.get(this.currentTab.id) === true;
+    const candidate = section !== null && pageVisible && this.windowFocused && this.isUserActive();
+    const isTracking = candidate
+      ? await Promise.resolve(this.isUsageAllowed(url, this.now())).catch(() => false)
+      : false;
     return {
       section,
-      isTracking: section !== null && pageVisible && this.windowFocused && this.isUserActive(),
+      isTracking,
       idleState: this.idleState,
       windowFocused: this.windowFocused
     };

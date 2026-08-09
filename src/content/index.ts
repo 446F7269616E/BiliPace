@@ -1,12 +1,17 @@
-import { runtimeGetURL } from "../shared/browser";
+import { runtimeGetURL, storageAddChangeListener } from "../shared/browser";
+import { normalizeSettings } from "../shared/config";
 import { sendRequest, type SessionEvent } from "../shared/messages";
 import { extractBvidFromVideoUrl } from "../shared/plan";
 import { SECTION_LABELS, type PageDecision } from "../shared/types";
+import { STORAGE_KEYS } from "../shared/storage";
+import { ContentFilterController } from "./content-filters";
+import { getEffectiveBilibiliUrl } from "./site-adapters";
 
 const ROOT_ID = "bilifocus-block-root";
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const ROUTE_POLL_INTERVAL_MS = 1_000;
 const SESSION_ID = createSessionId();
+const contentFilters = new ContentFilterController();
 
 let renderedForUrl = "";
 let lastSeenUrl = window.location.href;
@@ -24,6 +29,17 @@ window.addEventListener("popstate", routeMayHaveChanged);
 window.addEventListener("hashchange", routeMayHaveChanged);
 document.addEventListener("visibilitychange", () => {
   if (contentStarted) void sendSessionUpdate("heartbeat");
+});
+storageAddChangeListener((changes, areaName) => {
+  if (areaName !== "local") return;
+  const changed = changes[STORAGE_KEYS.settings];
+  if (!changed || changed.newValue === undefined) return;
+  const settings = normalizeSettings(changed.newValue);
+  contentFilters.apply(
+    settings.contentFilters,
+    getEffectiveBilibiliUrl(document, window.location.href)
+  );
+  void evaluatePage();
 });
 window.addEventListener("pagehide", () => {
   if (contentStarted) void sendSessionUpdate("stop");
@@ -122,7 +138,7 @@ async function sendSessionUpdate(event: SessionEvent): Promise<void> {
       type: "SESSION_UPDATE",
       event,
       sessionId: SESSION_ID,
-      url: window.location.href,
+      url: getEffectiveBilibiliUrl(document, window.location.href),
       visibility: document.visibilityState === "visible" ? "visible" : "hidden"
     });
   } catch {
@@ -132,11 +148,16 @@ async function sendSessionUpdate(event: SessionEvent): Promise<void> {
 }
 
 async function evaluatePage(): Promise<void> {
-  const url = window.location.href;
+  const topLevelUrl = window.location.href;
+  const url = getEffectiveBilibiliUrl(document, topLevelUrl);
   const generation = ++evaluationGeneration;
   try {
-    const decision = await sendRequest({ type: "GET_PAGE_DECISION", url });
-    if (generation !== evaluationGeneration || url !== window.location.href) return;
+    const [decision, settings] = await Promise.all([
+      sendRequest({ type: "GET_PAGE_DECISION", url }),
+      sendRequest({ type: "GET_SETTINGS" })
+    ]);
+    if (generation !== evaluationGeneration || topLevelUrl !== window.location.href) return;
+    contentFilters.apply(settings.contentFilters, url);
     if (!decision.blocked) {
       removeBlockPage();
       renderedForUrl = url;
@@ -145,7 +166,7 @@ async function evaluatePage(): Promise<void> {
 
     if (renderedForUrl !== url || !document.getElementById(ROOT_ID)) {
       await whenDocumentReady();
-      if (url !== window.location.href) return;
+      if (topLevelUrl !== window.location.href) return;
       renderBlockPage(decision, url);
       renderedForUrl = url;
     }
@@ -175,7 +196,7 @@ function renderBlockPage(decision: PageDecision, url: string): void {
 
   const mark = element("div", "mark", "B");
   mark.setAttribute("aria-hidden", "true");
-  const eyebrow = element("p", "eyebrow", "BiliPace · 专注模式");
+  const eyebrow = element("p", "eyebrow", "BiliPace · 专注拦截");
   const heading = element("h1", "", "先把注意力留给重要的事");
   heading.id = "bilifocus-title";
 
@@ -232,7 +253,7 @@ function renderBlockPage(decision: PageDecision, url: string): void {
       }
       status.textContent = "今天的临时访问次数已用完。";
     } catch {
-      status.textContent = "暂时无法连接插件，请稍后再试。";
+      status.textContent = "临时访问没有开启，请重试。";
     } finally {
       allowButton.disabled = false;
     }

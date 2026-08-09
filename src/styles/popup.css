@@ -90,6 +90,33 @@
   height: 15px;
 }
 
+.today-card__live {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 13px;
+  padding: 6px 9px;
+  color: rgb(255 255 255 / 84%);
+  background: rgb(97 15 49 / 18%);
+  border: 1px solid rgb(255 255 255 / 14%);
+  border-radius: 999px;
+  font-size: 11px;
+}
+
+.today-card__live-dot {
+  width: 7px;
+  height: 7px;
+  background: rgb(255 255 255 / 48%);
+  border-radius: 50%;
+}
+
+.today-card__live[data-active="true"] .today-card__live-dot {
+  background: #baf9d5;
+  box-shadow: 0 0 0 4px rgb(186 249 213 / 18%);
+}
+
 .focus-control {
   display: flex;
   align-items: center;
@@ -280,7 +307,7 @@
   min-height: 44px;
 }
 
-.popup-actions__plan {
+.popup-actions__home {
   grid-column: 1 / -1;
 }
 

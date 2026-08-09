@@ -4,6 +4,7 @@ import {
   SECTION_LABELS,
   type DailyUsage,
   type SectionId,
+  type TrackingStatus,
   type UsagePeriod,
   type UsageSummary
 } from "../shared/types";
@@ -16,6 +17,7 @@ import {
   setButtonBusy,
   toast
 } from "../styles/dom";
+import { createPageNavigation } from "../ui/page-navigation";
 
 const SECTION_COLORS: Readonly<Record<SectionId, string>> = {
   home: "#e94983",
@@ -36,21 +38,44 @@ const PERIOD_LABELS: Readonly<Record<UsagePeriod, string>> = {
 const app = assertAppRoot();
 let currentPeriod: UsagePeriod = "week";
 let loadSequence = 0;
+let currentUsage: UsageSummary | null = null;
 
 document.body.classList.add("dashboard-page");
 void loadDashboard(currentPeriod);
+window.setInterval(() => void refreshLiveDashboard(), 5_000);
 
 async function loadDashboard(period: UsagePeriod): Promise<void> {
   currentPeriod = period;
   const sequence = ++loadSequence;
   renderLoading(period);
   try {
-    const usage = await sendRequest({ type: "GET_USAGE", period });
+    const [usage, tracking] = await Promise.all([
+      sendRequest({ type: "GET_USAGE", period }),
+      sendRequest({ type: "GET_TRACKING_STATUS" })
+    ]);
     if (sequence !== loadSequence) return;
-    renderDashboard(usage);
+    currentUsage = usage;
+    renderDashboard(usage, tracking);
   } catch (error) {
     if (sequence !== loadSequence) return;
     renderError(period, describeError(error));
+  }
+}
+
+async function refreshLiveDashboard(): Promise<void> {
+  if (!currentUsage || document.visibilityState !== "visible") return;
+  try {
+    const [usage, tracking] = await Promise.all([
+      sendRequest({ type: "GET_USAGE", period: currentPeriod }),
+      sendRequest({ type: "GET_TRACKING_STATUS" })
+    ]);
+    currentUsage = usage;
+    const total = document.querySelector<HTMLElement>("[data-testid='dashboard-total-time']");
+    if (total) total.textContent = formatDuration(usage.totalSeconds, true);
+    const live = document.querySelector<HTMLElement>("[data-testid='dashboard-live-status']");
+    if (live) live.textContent = liveTrackingLabel(tracking);
+  } catch {
+    // Preserve the last confirmed summary while a background page wakes up.
   }
 }
 
@@ -88,8 +113,8 @@ function renderError(period: UsagePeriod, message: string): void {
       element("div", {
         children: [
           element("div", { className: "state-view__icon", children: [icon("warning")] }),
-          element("h2", { text: "使用洞察加载失败" }),
-          element("p", { text: message }),
+          element("h2", { text: "暂时看不到使用时间" }),
+          element("p", { text: `${message} 请重试。` }),
           retry
         ]
       })
@@ -98,10 +123,10 @@ function renderError(period: UsagePeriod, message: string): void {
   app.replaceChildren(createShell(period, state));
 }
 
-function renderDashboard(usage: UsageSummary): void {
+function renderDashboard(usage: UsageSummary, tracking: TrackingStatus): void {
   const content = element("div", {
     children: [
-      createOverview(usage),
+      createOverview(usage, tracking),
       element("div", {
         className: "dashboard-grid",
         children: [
@@ -123,17 +148,7 @@ function createShell(period: UsagePeriod, content: HTMLElement): HTMLElement {
   return element("div", {
     className: "dashboard-shell app-shell",
     children: [
-      element("header", {
-        className: "dashboard-topbar",
-        children: [
-          createBrand(),
-          element("a", {
-            className: "btn",
-            attrs: { href: "options.html", target: "_blank", rel: "noreferrer" },
-            children: [icon("settings"), element("span", { text: "专注设置" })]
-          })
-        ]
-      }),
+      createPageNavigation({ currentPage: "dashboard" }),
       element("section", {
         className: "dashboard-heading",
         children: [
@@ -150,20 +165,6 @@ function createShell(period: UsagePeriod, content: HTMLElement): HTMLElement {
         ]
       }),
       content
-    ]
-  });
-}
-
-function createBrand(): HTMLElement {
-  return element("a", {
-    className: "brand",
-    attrs: { href: "dashboard.html", "aria-label": "BiliPace 哔哩节拍使用洞察" },
-    children: [
-      element("span", { className: "brand__mark", children: [icon("focus")] }),
-      element("span", {
-        className: "brand__meta",
-        children: [element("span", { text: "BiliPace" }), element("small", { text: "使用洞察" })]
-      })
     ]
   });
 }
@@ -191,11 +192,8 @@ function createPeriodControl(selected: UsagePeriod): HTMLElement {
   });
 }
 
-function createOverview(usage: UsageSummary): HTMLElement {
-  const dayCount = Math.max(1, usage.byDay.length);
-  const activeDays = usage.byDay.filter((day) => totalForDay(day) > 0).length;
+function createOverview(usage: UsageSummary, tracking: TrackingStatus): HTMLElement {
   const topSection = getTopSection(usage);
-  const average = usage.totalSeconds / dayCount;
   return element("section", {
     className: "overview-grid",
     attrs: { "aria-label": `${PERIOD_LABELS[usage.period]}概览` },
@@ -208,11 +206,11 @@ function createOverview(usage: UsageSummary): HTMLElement {
         "dashboard-total-time"
       ),
       createMetricCard(
-        usage.period === "day" ? "今日记录" : "日均使用",
-        usage.period === "day"
-          ? `${activeDays > 0 ? "已记录" : "未记录"}`
-          : formatDuration(average, true),
-        usage.period === "day" ? "只计前台且窗口活跃的时间" : `按 ${dayCount} 个自然日计算`
+        "实时状态",
+        liveTrackingLabel(tracking),
+        tracking.isTracking ? "时长正在自动更新" : "切走标签页或离开设备后会自动暂停",
+        false,
+        "dashboard-live-status"
       ),
       createMetricCard(
         "最多使用",
@@ -221,6 +219,15 @@ function createOverview(usage: UsageSummary): HTMLElement {
       )
     ]
   });
+}
+
+function liveTrackingLabel(tracking: TrackingStatus): string {
+  if (tracking.isTracking) {
+    return `正在计时 · ${tracking.section ? SECTION_LABELS[tracking.section] : "Bilibili"}`;
+  }
+  if (tracking.section === null) return "当前未计时";
+  if (tracking.idleState === "idle" || tracking.idleState === "locked") return "离开设备，已暂停";
+  return "当前未计时";
 }
 
 function createMetricCard(
@@ -376,7 +383,7 @@ function createInsights(usage: UsageSummary): HTMLElement {
     attrs: { "aria-labelledby": "insights-title" },
     children: [
       element("h2", { text: "温和洞察", attrs: { id: "insights-title" } }),
-      element("p", { text: "依据当前范围自动生成，不做价值判断" }),
+      element("p", { text: "根据这段时间的使用情况整理" }),
       element("ul", {
         className: "insight-list",
         children: insights.map((insight) =>

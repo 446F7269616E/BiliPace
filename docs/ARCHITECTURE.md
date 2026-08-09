@@ -34,6 +34,24 @@ adapters: Chromium SW / Firefox event page / Safari WebExtension
 
 未知路由采用安全降级：不屏蔽、可归入 `other` 的聚合时长，但不得记录完整 URL。站点 DOM 选择器失效时不得把整个网站永久隐藏；应显示可退出的扩展自有遮罩或停止增强，并记录本机可诊断状态。
 
+BewlyBewly! Ave Mujica 的 `?page=` 虚拟路由必须先映射为统一板块；其开放 Shadow DOM 通过独立 site adapter 暴露为查询根和样式宿主。Document 与 ShadowRoot 分别观察、注入和清理，禁止假设普通 CSS 可以跨越 Shadow DOM。视频抽屉只由顶层会话读取可见 iframe 的 Bilibili URL 作为板块归属，不启用 `all_frames`，避免重复计时与重复重定向。
+
+## 内容降噪层
+
+页内内容隐藏与整页专注拦截是两层独立策略。`ContentFilterId` 是稳定领域标识，Bilibili 原生界面与兼容界面各自提供 selector profile；UI 与存储不得持有选择器。
+
+- 选择器失效必须安全放行，不能隐藏未知容器或整个站点。
+- 样式只在设置、路由或 root 生命周期变化时重算；高频信息流只增量扫描新增卡片。
+- 用户正则有长度、数量和安全形状限制；不安全或无效规则被忽略，不能阻塞页面主线程。
+- `/` 搜索快捷键尊重输入框、可编辑元素、组合输入和修饰键。
+- 设置存储变化应立即刷新已打开页面，不依赖刷新网页。
+
+## 全页信息架构
+
+`home.html` 是全页一级入口“专注中心”；`plan.html`、`dashboard.html`、`options.html` 是并列二级页。它们使用 `src/ui/page-navigation.ts` 的共享导航，固定顺序、同标签跳转、当前页 `aria-current`、品牌与面包屑返回专注中心。popup 只承担快速状态与开关，不作为全页返回目标。
+
+所有用户可见文本遵守 [UX_WRITING.md](./UX_WRITING.md)。UI 不直接解释后台异常、provider 状态或内部实现；调试信息只进入本机开发日志。
+
 ## 权威计时模型
 
 有效使用时间同时满足：
@@ -78,6 +96,8 @@ content script 发出 `SESSION_START`、`HEARTBEAT`、`ROUTE_CHANGE`、`SESSION_
 每个值包含 `schemaVersion`，读取时先验证再迁移。迁移必须幂等、保留可识别数据，并在失败时保留原值、回退到安全默认值；禁止静默覆盖损坏数据。正式类型以核心模块定义为准，变更时同步更新此文档和 fixtures。
 
 数据最小化约束：统计只存本地日期、板块枚举和非负整数秒数。观看计划只在用户主动添加时保存 BV 号、canonical URL、标题、顺序、来源和完成状态。其余浏览过程不存完整 URL、标题、视频/用户 ID、账号、Cookie、搜索词或页面正文。
+
+内容降噪设置可保存用户主动输入的标题关键词与受限正则规则；它们只在本机匹配页面卡片标题，不保存命中的标题或生成浏览记录。
 
 ## 导入与账号连接边界
 

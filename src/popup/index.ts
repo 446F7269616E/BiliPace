@@ -6,6 +6,7 @@ import {
   type FocusSettings,
   type PageDecision,
   type SectionId,
+  type TrackingStatus,
   type UsageSummary
 } from "../shared/types";
 import {
@@ -23,28 +24,46 @@ interface PopupData {
   usage: UsageSummary;
   pageDecision: PageDecision | null;
   pageUrl: string | null;
+  trackingStatus: TrackingStatus;
 }
 
 const app = assertAppRoot();
+let currentData: PopupData | null = null;
 
 void loadPopup();
+window.setInterval(() => void refreshLiveSummary(), 5_000);
 
 async function loadPopup(): Promise<void> {
   renderLoading();
   try {
     const tabsPromise = tabsQuery({ active: true, currentWindow: true });
-    const [settings, usage, tabs] = await Promise.all([
+    const [settings, usage, trackingStatus, tabs] = await Promise.all([
       sendRequest({ type: "GET_SETTINGS" }),
       sendRequest({ type: "GET_USAGE", period: "day" }),
+      sendRequest({ type: "GET_TRACKING_STATUS" }),
       tabsPromise
     ]);
     const pageUrl = tabs[0]?.url ?? null;
     const pageDecision = pageUrl
       ? await sendRequest({ type: "GET_PAGE_DECISION", url: pageUrl })
       : null;
-    renderPopup({ settings, usage, pageDecision, pageUrl });
+    renderPopup({ settings, usage, trackingStatus, pageDecision, pageUrl });
   } catch (error) {
     renderError(describeError(error));
+  }
+}
+
+async function refreshLiveSummary(): Promise<void> {
+  if (!currentData || document.visibilityState !== "visible") return;
+  try {
+    const [usage, trackingStatus] = await Promise.all([
+      sendRequest({ type: "GET_USAGE", period: "day" }),
+      sendRequest({ type: "GET_TRACKING_STATUS" })
+    ]);
+    renderPopup({ ...currentData, usage, trackingStatus });
+  } catch {
+    // Keep the last confirmed values. The next refresh can recover without
+    // replacing the whole popup with a transient background-wakeup error.
   }
 }
 
@@ -55,7 +74,7 @@ function renderLoading(): void {
     element("div", { className: "today-card card skeleton", text: "正在加载今日使用时间" }),
     element("div", { className: "focus-control card skeleton", text: "正在加载专注状态" }),
     element("div", { className: "plan-control card skeleton", text: "正在加载计划模式" }),
-    element("div", { className: "page-policy card skeleton", text: "正在加载当前页面策略" })
+    element("div", { className: "page-policy card skeleton", text: "正在确认当前页面" })
   );
   app.replaceChildren(shell);
 }
@@ -80,7 +99,7 @@ function renderError(message: string): void {
             element("div", {
               children: [
                 element("div", { className: "state-view__icon", children: [icon("warning")] }),
-                element("h2", { text: "暂时无法读取数据" }),
+                element("h2", { text: "暂时看不到专注状态" }),
                 element("p", { text: message }),
                 retry
               ]
@@ -93,6 +112,7 @@ function renderError(message: string): void {
 }
 
 function renderPopup(data: PopupData): void {
+  currentData = data;
   const shell = element("div", { className: "popup-shell" });
   const totalBlocked = SECTION_IDS.filter(
     (section) => data.settings.sectionRules[section].enabled
@@ -142,7 +162,7 @@ function renderPopup(data: PopupData): void {
 
   shell.append(
     createHeader(),
-    createTodayCard(data.usage),
+    createTodayCard(data.usage, data.trackingStatus),
     focusControl,
     createPlanModeControl(data),
     createPagePolicy(data),
@@ -158,17 +178,6 @@ function renderPopup(data: PopupData): void {
 function createPlanModeControl(data: PopupData): HTMLElement {
   const active = data.settings.planMode.enabled;
   const planToggle = createToggle("计划模式", active, "popup-plan-mode-toggle");
-  const manageLink = element("a", {
-    className: "plan-control__link",
-    attrs: {
-      href: "plan.html",
-      target: "_blank",
-      rel: "noreferrer",
-      "data-testid": "popup-manage-plan"
-    },
-    children: ["管理观看清单", icon("arrow")]
-  });
-
   planToggle.input.addEventListener("change", () => {
     void updatePlanMode();
   });
@@ -219,8 +228,7 @@ function createPlanModeControl(data: PopupData): HTMLElement {
           }),
           planToggle.label
         ]
-      }),
-      manageLink
+      })
     ]
   });
 }
@@ -253,7 +261,7 @@ function createHeader(): HTMLElement {
   return element("header", { className: "popup-header", children: [brand, settingsLink] });
 }
 
-function createTodayCard(usage: UsageSummary): HTMLElement {
+function createTodayCard(usage: UsageSummary, tracking: TrackingStatus): HTMLElement {
   const topSection = SECTION_IDS.reduce<SectionId | null>((top, section) => {
     if (usage.bySection[section] <= 0) return top;
     return top === null || usage.bySection[section] > usage.bySection[top] ? section : top;
@@ -261,6 +269,13 @@ function createTodayCard(usage: UsageSummary): HTMLElement {
   const detail = topSection
     ? `最多用于${SECTION_LABELS[topSection]} · ${formatDuration(usage.bySection[topSection], true)}`
     : "今天还没有记录，专注从此刻开始";
+  const liveLabel = tracking.isTracking
+    ? `正在计时 · ${tracking.section ? SECTION_LABELS[tracking.section] : "Bilibili"}`
+    : tracking.section === null
+      ? "当前页面不是 Bilibili"
+      : tracking.idleState === "idle" || tracking.idleState === "locked"
+        ? "你已离开，计时自动暂停"
+        : "当前未计时";
 
   return element("section", {
     className: "today-card card",
@@ -279,7 +294,13 @@ function createTodayCard(usage: UsageSummary): HTMLElement {
           "aria-label": formatDuration(usage.totalSeconds, true)
         }
       }),
-      element("p", { className: "today-card__meta", children: [icon("bar-chart"), detail] })
+      element("p", { className: "today-card__meta", children: [icon("bar-chart"), detail] }),
+      element("p", {
+        className: "today-card__live",
+        dataset: { active: String(tracking.isTracking) },
+        attrs: { role: "status", "aria-live": "polite" },
+        children: [element("span", { className: "today-card__live-dot" }), liveLabel]
+      })
     ]
   });
 }
@@ -289,19 +310,19 @@ function createPagePolicy(data: PopupData): HTMLElement {
   const sectionLabel = decision?.section ? SECTION_LABELS[decision.section] : "当前页面";
   const status = decision?.blocked ? "blocked" : decision?.section ? "allowed" : "unmanaged";
   const statusTitle = decision?.blocked
-    ? `${sectionLabel}正在屏蔽`
+    ? `${sectionLabel}已进入专注拦截`
     : decision?.section
       ? `${sectionLabel}当前可访问`
-      : "此页面不在管理范围";
+      : "这个页面不受专注规则影响";
   const statusDetail = describeDecision(decision);
   const action =
     decision?.blocked && decision.canRequestTemporaryAccess
       ? element("button", {
           className: "btn btn--soft page-policy__action",
-          text: `放行 ${data.settings.temporaryAccess.durationMinutes} 分钟`,
+          text: `临时访问 ${data.settings.temporaryAccess.durationMinutes} 分钟`,
           attrs: {
             type: "button",
-            "aria-label": `临时放行 ${data.settings.temporaryAccess.durationMinutes} 分钟`,
+            "aria-label": `临时访问 ${data.settings.temporaryAccess.durationMinutes} 分钟`,
             "data-testid": "popup-temp-access"
           }
         })
@@ -315,13 +336,13 @@ function createPagePolicy(data: PopupData): HTMLElement {
     });
 
     async function grantTemporaryAccess(): Promise<void> {
-      setButtonBusy(actionButton, true, "放行中");
+      setButtonBusy(actionButton, true, "正在开启");
       try {
         const pageDecision = await sendRequest({
           type: "GRANT_TEMPORARY_ACCESS",
           url: pageUrl
         });
-        toast(`已临时放行 ${data.settings.temporaryAccess.durationMinutes} 分钟`);
+        toast(`接下来 ${data.settings.temporaryAccess.durationMinutes} 分钟可以访问`);
         renderPopup({ ...data, pageDecision });
       } catch (error) {
         setButtonBusy(actionButton, false);
@@ -355,8 +376,8 @@ function createPagePolicy(data: PopupData): HTMLElement {
       element("p", {
         className: "page-policy__notice",
         text: data.settings.temporaryAccess.enabled
-          ? "今天的临时放行次数已用完"
-          : "临时放行已在设置中关闭"
+          ? "今天的临时访问次数已用完"
+          : "临时访问已在设置中关闭"
       })
     );
   }
@@ -364,14 +385,19 @@ function createPagePolicy(data: PopupData): HTMLElement {
   return element("section", {
     className: "page-policy card",
     dataset: { status },
-    attrs: { "aria-label": "当前页面策略" },
+    attrs: { "aria-label": "当前页面" },
     children
   });
 }
 
 function createActions(): HTMLElement {
+  const homeLink = element("a", {
+    className: "btn btn--primary popup-actions__home",
+    attrs: { href: "home.html", target: "_blank", rel: "noreferrer" },
+    children: [icon("home"), "专注中心"]
+  });
   const planLink = element("a", {
-    className: "btn btn--primary popup-actions__plan",
+    className: "btn",
     attrs: {
       href: "plan.html",
       target: "_blank",
@@ -390,15 +416,10 @@ function createActions(): HTMLElement {
     },
     children: [icon("bar-chart"), "查看仪表盘"]
   });
-  const optionsLink = element("a", {
-    className: "btn",
-    attrs: { href: "options.html", target: "_blank", rel: "noreferrer" },
-    children: [icon("settings"), "详细设置"]
-  });
   return element("nav", {
     className: "popup-actions",
     attrs: { "aria-label": "扩展页面" },
-    children: [planLink, dashboardLink, optionsLink]
+    children: [homeLink, planLink, dashboardLink]
   });
 }
 
@@ -427,27 +448,27 @@ function createToggle(
 }
 
 function describeDecision(decision: PageDecision | null): string {
-  if (!decision) return "无法读取当前标签页";
+  if (!decision) return "打开一个 Bilibili 页面即可查看状态";
   switch (decision.reason) {
     case "not-managed":
       return "仅管理 Bilibili 的指定板块";
     case "focus-disabled":
       return "专注保护总开关已暂停";
     case "rule-disabled":
-      return "此板块的屏蔽开关已关闭";
+      return "这个页面没有开启专注拦截";
     case "outside-schedule":
       return "当前不在设定的专注时段内";
     case "daily-limit":
       return "已达到该板块的今日使用限额";
     case "temporary-access": {
-      if (!decision.temporaryAccessExpiresAt) return "临时放行生效中";
+      if (!decision.temporaryAccessExpiresAt) return "临时访问已开启";
       const time = new Date(decision.temporaryAccessExpiresAt).toLocaleTimeString("zh-CN", {
         hour: "2-digit",
         minute: "2-digit"
       });
-      return `临时放行至 ${time}`;
+      return `可以访问到 ${time}`;
     }
     case "blocked":
-      return `今日还可临时放行 ${decision.temporaryAccessUsesRemaining} 次`;
+      return `今天还可临时访问 ${decision.temporaryAccessUsesRemaining} 次`;
   }
 }

@@ -4,6 +4,27 @@ All notable changes to BiliPace will be documented in this file. The format foll
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-09
+
+### Added
+
+- Added modular in-page distraction controls for recommendations, dynamic feeds, related videos, comments, search suggestions, ads and top navigation.
+- Added title keyword and safety-bounded regular-expression video-card filters plus the `/` search shortcut.
+- Added a Shadow DOM-aware BewlyBewly! Ave Mujica adapter, virtual-route classification and visible drawer URL attribution.
+- Added a first-level Focus Center with live timing, today usage, focus status, plan status and clear routes to every full page.
+- Added a normative UX writing standard for user-facing text, errors, empty states and terminology.
+
+### Changed
+
+- Unified full-page navigation, breadcrumbs, current-page state and same-tab transitions across the Focus Center, Watch List, Usage Insights and Focus Settings.
+- Split “content quieting” from whole-page focus blocking, and collapsed detailed page rules to reduce settings-page density.
+- Usage summaries now settle the active interval before display; popup and insights expose a live tracking state.
+- Rewrote high-priority interface text around user outcomes and alternatives instead of provider, schema or service configuration.
+
+### Privacy
+
+- Content rules and title patterns remain local; matching does not create a history of titles or URLs and adds no new permission or network request.
+
 ## [0.2.0] - 2026-08-09
 
 ### Changed

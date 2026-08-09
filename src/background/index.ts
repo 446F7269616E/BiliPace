@@ -69,6 +69,7 @@ export async function handleMessage(
       return settings.reset();
     case "GET_USAGE":
       assertPeriod(message.period);
+      await tracker.flush();
       return analytics.summarize(message.period, parseLocalDate(message.anchorDate) ?? new Date());
     case "CLEAR_USAGE":
       await analytics.clear();
@@ -80,6 +81,7 @@ export async function handleMessage(
       assertUrl(message.url);
       return focus.grant(message.url);
     case "GET_TRACKING_STATUS":
+      await tracker.flush();
       return tracker.getStatus();
     case "GET_PLAN_STATE":
       assertExtensionPageSender(sender);

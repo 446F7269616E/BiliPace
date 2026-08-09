@@ -55,12 +55,40 @@ export interface PlanModeSettings {
   watchDurationMinutes: number;
 }
 
+export const CONTENT_FILTER_IDS = [
+  "home-feed",
+  "dynamic-feed",
+  "related-videos",
+  "comments",
+  "search-suggestions",
+  "ads",
+  "top-navigation"
+] as const;
+
+export type ContentFilterId = (typeof CONTENT_FILTER_IDS)[number];
+
+export interface VideoCardFilterSettings {
+  enabled: boolean;
+  /** Case-insensitive plain-text matches. Persisted values are trimmed and bounded. */
+  keywords: string[];
+  /** User-authored patterns accepted only after a conservative safety check. */
+  regexPatterns: string[];
+}
+
+export interface ContentFilterSettings {
+  enabled: boolean;
+  hiddenElements: Record<ContentFilterId, boolean>;
+  videoCards: VideoCardFilterSettings;
+  slashToSearch: boolean;
+}
+
 export interface FocusSettings {
   schemaVersion: 1;
   enabled: boolean;
   sectionRules: Record<SectionId, SectionRule>;
   temporaryAccess: TemporaryAccessSettings;
   planMode: PlanModeSettings;
+  contentFilters: ContentFilterSettings;
 }
 
 export type DeepPartial<T> = T extends readonly (infer U)[]

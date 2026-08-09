@@ -4,6 +4,7 @@ import type { BilibiliProviderStatus } from "../integrations";
 import { MAX_PLAN_IMPORT_ITEMS, MAX_PLAN_TITLE_LENGTH } from "../shared/plan";
 import type { PlanItem, PlanItemInput, PlanItemSource, PlanState } from "../shared/types";
 import { assertAppRoot, describeError, element, icon, setButtonBusy, toast } from "../styles/dom";
+import { createPageNavigation } from "../ui/page-navigation";
 
 const SOURCE_LABELS: Readonly<Record<PlanItemSource, string>> = {
   manual: "手动添加",
@@ -49,7 +50,7 @@ function renderLoading(): void {
             children: [
               element("div", { className: "plan-state__icon", children: [icon("calendar")] }),
               element("h2", { text: "正在整理你的观看计划" }),
-              element("p", { text: "读取待办、完成记录与计划模式状态…" }),
+              element("p", { text: "马上就好…" }),
               element("div", {
                 className: "plan-skeleton",
                 attrs: { "aria-hidden": "true" },
@@ -121,41 +122,7 @@ function createShell(content: HTMLElement): HTMLElement {
   return element("div", {
     className: "plan-shell app-shell",
     children: [
-      element("header", {
-        className: "plan-topbar",
-        children: [
-          element("a", {
-            className: "brand",
-            attrs: { href: "plan.html", "aria-label": "BiliPace 哔哩节拍观看计划" },
-            children: [
-              element("span", { className: "brand__mark", children: [icon("focus")] }),
-              element("span", {
-                className: "brand__meta",
-                children: [
-                  element("span", { text: "BiliPace" }),
-                  element("small", { text: "观看计划" })
-                ]
-              })
-            ]
-          }),
-          element("nav", {
-            className: "plan-topbar__actions",
-            attrs: { "aria-label": "扩展页面" },
-            children: [
-              element("a", {
-                className: "btn",
-                attrs: { href: "dashboard.html", title: "使用洞察" },
-                children: [icon("bar-chart"), element("span", { text: "使用洞察" })]
-              }),
-              element("a", {
-                className: "btn",
-                attrs: { href: "options.html", title: "专注设置" },
-                children: [icon("settings"), element("span", { text: "专注设置" })]
-              })
-            ]
-          })
-        ]
-      }),
+      createPageNavigation({ currentPage: "plan" }),
       element("header", {
         className: "plan-heading",
         children: [
@@ -175,7 +142,7 @@ function createShell(content: HTMLElement): HTMLElement {
           }),
           element("p", {
             className: "plan-heading__aside",
-            text: "队列与打卡记录只保存在当前浏览器。你可以随时暂停计划模式，待办不会丢失。"
+            text: "观看清单只保存在这台设备。暂停计划模式不会删除待办。"
           })
         ]
       }),
@@ -208,7 +175,7 @@ function createModeCard(planState: PlanState): HTMLElement {
   const durationSelect = element("select", {
     className: "plan-select plan-mode-card__duration",
     attrs: {
-      "aria-label": "每次开始观看的放行时长",
+      "aria-label": "每次可观看时长",
       "data-testid": "plan-watch-duration"
     },
     children: durationOptions.map((minutes) =>
@@ -236,13 +203,15 @@ function createModeCard(planState: PlanState): HTMLElement {
           element("div", {
             children: [
               element("h2", {
-                text: planState.settings.enabled ? "计划模式正在守护入口" : "计划模式已暂停",
+                text: planState.settings.enabled
+                  ? "每次打开 Bilibili，先看观看清单"
+                  : "计划模式已暂停",
                 attrs: { id: "plan-mode-title" }
               }),
               element("p", {
                 text: planState.settings.enabled
-                  ? "打开任意 Bilibili 链接都会先进入计划页；只有点击计划中的“开始观看”，对应视频才会限时放行。"
-                  : "开启后会先拦住无目的浏览。已有队列与完成记录在暂停期间仍会保留。"
+                  ? "从清单开始的视频会在所选时长内打开，其他链接会回到这里。"
+                  : "开启后，打开 Bilibili 会先回到观看清单。已有待办和完成记录仍会保留。"
               })
             ]
           })
@@ -253,7 +222,7 @@ function createModeCard(planState: PlanState): HTMLElement {
         children: [
           element("label", {
             className: "plan-field plan-mode-card__duration-field",
-            children: [element("span", { text: "单次观看窗口" }), durationSelect]
+            children: [element("span", { text: "每次可看多久" }), durationSelect]
           }),
           element("span", {
             className: "plan-mode-card__state",
@@ -312,8 +281,8 @@ function createQueueCard(planState: PlanState): HTMLElement {
             children: [
               element("div", {
                 children: [
-                  element("h2", { text: "观看队列", attrs: { id: "plan-queue-title" } }),
-                  element("p", { text: "按顺序完成，一次只为真正要看的内容放行。" })
+                  element("h2", { text: "观看清单", attrs: { id: "plan-queue-title" } }),
+                  element("p", { text: "按顺序开始，也可以随时调整先后。" })
                 ]
               }),
               createProgress(pending.length, completed.length, completion)
@@ -419,11 +388,11 @@ function createEmpty(completed: boolean): HTMLElement {
             className: "plan-state__icon",
             children: [icon(completed ? "check" : "plus")]
           }),
-          element("h3", { text: completed ? "还没有完成记录" : "队列还是空的" }),
+          element("h3", { text: completed ? "还没有完成记录" : "还没有待看的视频" }),
           element("p", {
             text: completed
               ? "完成一个计划视频后，它会在这里留下打卡记录。"
-              : "在右侧粘贴一个视频链接，给下一次打开 Bilibili 一个明确目标。"
+              : "添加一个想看的视频，为下次打开 Bilibili 留下明确目标。"
           })
         ]
       })
@@ -678,7 +647,7 @@ async function updateItem(
   try {
     state = await sendRequest({ type: "UPDATE_PLAN_ITEM", id: item.id, patch: { title, url } });
     editingItemId = null;
-    toast("计划项已更新");
+    toast("更改已保存");
     renderPlan({ focusItemId: item.id });
   } catch (error) {
     setButtonBusy(button, false);
@@ -835,23 +804,17 @@ function createImportCard(): HTMLElement {
   });
   bulk.addEventListener("click", openBulkImportDialog);
 
-  const unavailableMessage = "需要由维护者配置 Bilibili 官方开放平台授权后才能使用";
+  const unavailableMessage = "暂不支持账号导入，你仍可以批量粘贴视频链接";
   const connectionLabel =
     importStatus?.state === "authorization-required"
-      ? "等待官方授权"
+      ? "连接后即可导入"
       : importStatus?.state === "ready"
-        ? "官方服务已就绪"
-        : "官方接入待配置";
+        ? "账号导入已可用"
+        : "暂不支持账号导入";
   const connectionMessage =
     importStatus?.state === "not-configured"
-      ? importStatus.message
-      : "稍后再看与收藏夹同步需要 Bilibili 官方开放平台应用资质、用户授权与服务端支持。当前版本不会读取 Cookie 或网页登录状态。";
-  const providerActionUrl =
-    importStatus?.state === "not-configured"
-      ? importStatus.setupUrl
-      : importStatus?.state === "authorization-required"
-        ? importStatus.authorizationUrl
-        : null;
+      ? "你仍可以一次粘贴多条视频链接，快速加入观看清单。"
+      : "连接前会先征得你的同意；你也可以继续使用本地批量添加。";
   const watchLater = element("button", {
     className: "btn",
     text: "从稍后再看导入",
@@ -883,8 +846,8 @@ function createImportCard(): HTMLElement {
           element("span", { className: "plan-import-card__icon", children: [icon("refresh")] }),
           element("div", {
             children: [
-              element("h2", { text: "批量建立计划", attrs: { id: "plan-import-title" } }),
-              element("p", { text: "先用本地批量粘贴；官方授权接入配置完成后可扩展账号来源。" })
+              element("h2", { text: "更多添加方式", attrs: { id: "plan-import-title" } }),
+              element("p", { text: "一次粘贴多条链接，快速加入观看清单。" })
             ]
           })
         ]
@@ -903,17 +866,7 @@ function createImportCard(): HTMLElement {
             text: connectionMessage,
             attrs: { id: "official-import-note" }
           }),
-          providerActionUrl
-            ? element("a", {
-                className: "plan-connection__link",
-                attrs: {
-                  href: providerActionUrl,
-                  target: "_blank",
-                  rel: "noreferrer"
-                },
-                children: ["了解官方接入要求", icon("external")]
-              })
-            : null
+          null
         ]
       }),
       bulk,
@@ -923,7 +876,7 @@ function createImportCard(): HTMLElement {
         children: [
           icon("shield"),
           element("span", {
-            text: "BiliPace 不会要求或保存 Bilibili 密码。未来官方接入也必须通过明确授权，且不会把应用密钥打包进扩展。"
+            text: "不需要输入 Bilibili 密码。账号导入开放前会先说明会读取哪些内容。"
           })
         ]
       })

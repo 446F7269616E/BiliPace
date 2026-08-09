@@ -2,8 +2,8 @@
   "manifest_version": 3,
   "name": "BiliPace - 哔哩节拍",
   "short_name": "BiliPace",
-  "version": "0.2.0",
-  "description": "按页面与时间计划减少 Bilibili 分心，并在本地查看使用时间。",
+  "version": "0.3.0",
+  "description": "隐藏 Bilibili 干扰内容，按计划专注观看，并在本地了解使用时间。",
   "permissions": ["storage"],
   "host_permissions": [
     "https://www.bilibili.com/*",

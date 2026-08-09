@@ -16,6 +16,7 @@ const entryPoints = {
   background: path.join(root, "src/background/index.ts"),
   content: path.join(root, "src/content/index.ts"),
   popup: path.join(root, "src/popup/index.ts"),
+  home: path.join(root, "src/home/index.ts"),
   options: path.join(root, "src/options/index.ts"),
   dashboard: path.join(root, "src/dashboard/index.ts"),
   plan: path.join(root, "src/plan/index.ts")

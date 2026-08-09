@@ -1,5 +1,8 @@
 import {
   type BlockingSchedule,
+  CONTENT_FILTER_IDS,
+  type ContentFilterId,
+  type ContentFilterSettings,
   type DeepPartial,
   type FocusSettings,
   SECTION_IDS,
@@ -10,6 +13,16 @@ import {
 } from "./types";
 
 const DEFAULT_BLOCKED_SECTIONS: ReadonlySet<SectionId> = new Set(["home", "dynamic", "popular"]);
+
+const DEFAULT_HIDDEN_ELEMENTS: Readonly<Record<ContentFilterId, boolean>> = Object.freeze({
+  "home-feed": false,
+  "dynamic-feed": false,
+  "related-videos": true,
+  comments: false,
+  "search-suggestions": true,
+  ads: true,
+  "top-navigation": false
+});
 
 function defaultRule(section: SectionId): SectionRule {
   return {
@@ -35,6 +48,12 @@ export const DEFAULT_SETTINGS: Readonly<FocusSettings> = Object.freeze({
   planMode: Object.freeze({
     enabled: false,
     watchDurationMinutes: 45
+  }),
+  contentFilters: Object.freeze({
+    enabled: true,
+    hiddenElements: DEFAULT_HIDDEN_ELEMENTS,
+    videoCards: Object.freeze({ enabled: false, keywords: [], regexPatterns: [] }),
+    slashToSearch: true
   })
 });
 
@@ -59,6 +78,18 @@ export function mergeSettings(
     planMode: {
       ...base.planMode,
       ...(patch.planMode ?? {})
+    },
+    contentFilters: {
+      ...base.contentFilters,
+      ...(patch.contentFilters ?? {}),
+      hiddenElements: {
+        ...base.contentFilters.hiddenElements,
+        ...(patch.contentFilters?.hiddenElements ?? {})
+      },
+      videoCards: {
+        ...base.contentFilters.videoCards,
+        ...(patch.contentFilters?.videoCards ?? {})
+      }
     }
   };
 
@@ -126,13 +157,50 @@ export function normalizeSettings(value: unknown): FocusSettings {
     watchDurationMinutes: clampInteger(rawPlanMode.watchDurationMinutes, 1, 360, 45)
   };
 
+  const contentFilters = normalizeContentFilters(value.contentFilters, defaults.contentFilters);
+
   return {
     schemaVersion: 1,
     enabled: typeof value.enabled === "boolean" ? value.enabled : defaults.enabled,
     sectionRules,
     temporaryAccess,
-    planMode
+    planMode,
+    contentFilters
   };
+}
+
+function normalizeContentFilters(
+  value: unknown,
+  defaults: ContentFilterSettings
+): ContentFilterSettings {
+  const raw = isRecord(value) ? value : {};
+  const rawHidden = isRecord(raw.hiddenElements) ? raw.hiddenElements : {};
+  const hiddenElements = {} as Record<ContentFilterId, boolean>;
+  for (const id of CONTENT_FILTER_IDS) {
+    hiddenElements[id] =
+      typeof rawHidden[id] === "boolean" ? rawHidden[id] : defaults.hiddenElements[id];
+  }
+
+  const rawCards = isRecord(raw.videoCards) ? raw.videoCards : {};
+  return {
+    enabled: typeof raw.enabled === "boolean" ? raw.enabled : defaults.enabled,
+    hiddenElements,
+    videoCards: {
+      enabled: typeof rawCards.enabled === "boolean" ? rawCards.enabled : false,
+      keywords: normalizeFilterTerms(rawCards.keywords),
+      regexPatterns: normalizeFilterTerms(rawCards.regexPatterns)
+    },
+    slashToSearch: typeof raw.slashToSearch === "boolean" ? raw.slashToSearch : true
+  };
+}
+
+function normalizeFilterTerms(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const normalized = value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim().slice(0, 80))
+    .filter(Boolean);
+  return [...new Set(normalized)].slice(0, 50);
 }
 
 function normalizeSchedule(value: unknown): BlockingSchedule | undefined {
@@ -186,7 +254,16 @@ function cloneSettings(settings: Readonly<FocusSettings>): FocusSettings {
     enabled: settings.enabled,
     sectionRules,
     temporaryAccess: { ...settings.temporaryAccess },
-    planMode: { ...settings.planMode }
+    planMode: { ...settings.planMode },
+    contentFilters: {
+      ...settings.contentFilters,
+      hiddenElements: { ...settings.contentFilters.hiddenElements },
+      videoCards: {
+        ...settings.contentFilters.videoCards,
+        keywords: [...settings.contentFilters.videoCards.keywords],
+        regexPatterns: [...settings.contentFilters.videoCards.regexPatterns]
+      }
+    }
   };
 }
 
@@ -198,7 +275,13 @@ function createUnsafeDefaultSettings(): FocusSettings {
     enabled: true,
     sectionRules,
     temporaryAccess: { enabled: true, durationMinutes: 5, maxUsesPerDay: 3 },
-    planMode: { enabled: false, watchDurationMinutes: 45 }
+    planMode: { enabled: false, watchDurationMinutes: 45 },
+    contentFilters: {
+      enabled: true,
+      hiddenElements: { ...DEFAULT_HIDDEN_ELEMENTS },
+      videoCards: { enabled: false, keywords: [], regexPatterns: [] },
+      slashToSearch: true
+    }
   };
 }
 

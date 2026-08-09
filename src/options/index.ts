@@ -1,8 +1,10 @@
 import { sendRequest } from "../shared/messages";
 import {
+  CONTENT_FILTER_IDS,
   SECTION_IDS,
   SECTION_LABELS,
   type BlockingSchedule,
+  type ContentFilterId,
   type FocusSettings,
   type SectionId,
   type Weekday
@@ -16,6 +18,7 @@ import {
   setButtonBusy,
   toast
 } from "../styles/dom";
+import { createPageNavigation } from "../ui/page-navigation";
 
 const WEEKDAYS: ReadonlyArray<{ value: Weekday; short: string; label: string }> = [
   { value: 1, short: "一", label: "星期一" },
@@ -35,6 +38,18 @@ const SECTION_META: Readonly<Record<SectionId, { description: string; color: str
   live: { description: "直播首页与直播间", color: "#3b9f91" },
   bangumi: { description: "番剧、电影与影视内容", color: "#4e78e8" },
   search: { description: "搜索结果与发现内容", color: "#63738f" }
+};
+
+const CONTENT_FILTER_META: Readonly<
+  Record<ContentFilterId, { title: string; description: string }>
+> = {
+  "home-feed": { title: "首页推荐流", description: "保留导航和搜索，收起连续推荐内容" },
+  "dynamic-feed": { title: "动态信息流", description: "减少打开动态后继续滚动的冲动" },
+  "related-videos": { title: "相关视频", description: "播放页只留下正在看的内容" },
+  comments: { title: "评论区", description: "需要安静观看时隐藏评论与回复" },
+  "search-suggestions": { title: "搜索联想", description: "输入时不再展示额外推荐词" },
+  ads: { title: "推广内容", description: "隐藏可识别的广告和推广卡片" },
+  "top-navigation": { title: "顶部导航", description: "需要更沉浸时收起站点顶栏" }
 };
 
 const app = assertAppRoot();
@@ -73,7 +88,7 @@ function renderLoading(): void {
           children: [
             element("div", { className: "state-view__icon", children: [icon("settings")] }),
             element("h2", { text: "正在准备你的专注空间" }),
-            element("p", { text: "读取板块规则与专注计划…" })
+            element("p", { text: "马上就好…" })
           ]
         })
       ]
@@ -114,6 +129,7 @@ function renderOptions(): void {
   const content = element("div", {
     className: "app-shell",
     children: [
+      topbar,
       createPageHeader(),
       createGuide(),
       element("div", {
@@ -123,7 +139,7 @@ function renderOptions(): void {
     ]
   });
   savebar = createSavebar();
-  shell.append(topbar, content, savebar);
+  shell.append(content, savebar);
   app.replaceChildren(shell);
   updateDirtyState();
 }
@@ -144,48 +160,7 @@ function createTopbar(): HTMLElement {
     dataset: { dirty: "false" }
   });
 
-  return element("header", {
-    className: "options-topbar",
-    children: [
-      element("div", {
-        className: "options-topbar__inner",
-        children: [
-          createBrand(),
-          element("div", {
-            className: "cluster",
-            children: [
-              saveState,
-              element("a", {
-                className: "btn",
-                attrs: { href: "plan.html", target: "_blank", rel: "noreferrer" },
-                children: [icon("calendar"), element("span", { text: "观看计划" })]
-              }),
-              element("a", {
-                className: "btn",
-                attrs: { href: "dashboard.html", target: "_blank", rel: "noreferrer" },
-                children: [icon("bar-chart"), element("span", { text: "查看仪表盘" })]
-              }),
-              topSaveButton
-            ]
-          })
-        ]
-      })
-    ]
-  });
-}
-
-function createBrand(): HTMLElement {
-  return element("a", {
-    className: "brand",
-    attrs: { href: "options.html", "aria-label": "BiliPace 哔哩节拍设置" },
-    children: [
-      element("span", { className: "brand__mark", children: [icon("focus")] }),
-      element("span", {
-        className: "brand__meta",
-        children: [element("span", { text: "BiliPace" }), element("small", { text: "非官方扩展" })]
-      })
-    ]
-  });
+  return createPageNavigation({ currentPage: "options", actions: [saveState, topSaveButton] });
 }
 
 function createPageHeader(): HTMLElement {
@@ -245,9 +220,10 @@ function createGuide(): HTMLElement {
 
 function createNavigation(): HTMLElement {
   const links = [
-    ["sections", "shield", "板块管理"],
+    ["content-filters", "eye", "内容降噪"],
+    ["sections", "shield", "整页专注"],
     ["plan-mode", "calendar", "计划模式"],
-    ["access", "unlock", "临时放行"],
+    ["access", "unlock", "临时访问"],
     ["privacy", "lock", "数据与隐私"]
   ] as const;
   return element("aside", {
@@ -272,7 +248,191 @@ function createNavigation(): HTMLElement {
 function createSettingsContent(): HTMLElement {
   return element("div", {
     className: "settings-content",
-    children: [createSectionsArea(), createPlanArea(), createAccessArea(), createPrivacyArea()]
+    children: [
+      createContentFiltersArea(),
+      createSectionsArea(),
+      createPlanArea(),
+      createAccessArea(),
+      createPrivacyArea()
+    ]
+  });
+}
+
+function createContentFiltersArea(): HTMLElement {
+  if (!draft) return element("section");
+  const filters = draft.contentFilters;
+  const masterToggle = createToggle(
+    "隐藏干扰内容",
+    filters.enabled,
+    "content-filters-master-toggle"
+  );
+  masterToggle.input.addEventListener("change", () => {
+    if (!draft) return;
+    draft.contentFilters.enabled = masterToggle.input.checked;
+    renderOptionsPreservingScroll();
+    updateDirtyState();
+  });
+
+  const elementToggles = CONTENT_FILTER_IDS.map((id) => {
+    const meta = CONTENT_FILTER_META[id];
+    const toggle = createToggle(meta.title, filters.hiddenElements[id], `content-filter-${id}`);
+    toggle.input.disabled = !filters.enabled;
+    toggle.input.addEventListener("change", () => {
+      if (!draft) return;
+      draft.contentFilters.hiddenElements[id] = toggle.input.checked;
+      updateDirtyState();
+    });
+    return element("div", {
+      className: "content-filter-item",
+      children: [
+        element("div", {
+          children: [
+            element("strong", { text: meta.title }),
+            element("p", { text: meta.description })
+          ]
+        }),
+        toggle.label
+      ]
+    });
+  });
+
+  const shortcutToggle = createToggle(
+    "按斜杠键直达搜索",
+    filters.slashToSearch,
+    "slash-search-toggle"
+  );
+  shortcutToggle.input.disabled = !filters.enabled;
+  shortcutToggle.input.addEventListener("change", () => {
+    if (!draft) return;
+    draft.contentFilters.slashToSearch = shortcutToggle.input.checked;
+    updateDirtyState();
+  });
+
+  const cardToggle = createToggle(
+    "按标题隐藏视频卡片",
+    filters.videoCards.enabled,
+    "video-card-filter-toggle"
+  );
+  const keywordInput = element("textarea", {
+    className: "input content-filter-textarea",
+    attrs: {
+      rows: "5",
+      placeholder: "例如：赛事集锦\n直播回放",
+      "aria-label": "要隐藏的视频标题关键词，每行一个"
+    },
+    text: filters.videoCards.keywords.join("\n")
+  });
+  const regexInput = element("textarea", {
+    className: "input content-filter-textarea",
+    attrs: {
+      rows: "5",
+      placeholder: "例如：第\\d+期",
+      "aria-label": "要隐藏的视频标题规则，每行一个"
+    },
+    text: filters.videoCards.regexPatterns.join("\n")
+  });
+  const cardInputsDisabled = !filters.enabled || !filters.videoCards.enabled;
+  cardToggle.input.disabled = !filters.enabled;
+  keywordInput.disabled = cardInputsDisabled;
+  regexInput.disabled = cardInputsDisabled;
+  cardToggle.input.addEventListener("change", () => {
+    if (!draft) return;
+    draft.contentFilters.videoCards.enabled = cardToggle.input.checked;
+    keywordInput.disabled = !cardToggle.input.checked;
+    regexInput.disabled = !cardToggle.input.checked;
+    updateDirtyState();
+  });
+  keywordInput.addEventListener("input", () => {
+    if (!draft) return;
+    draft.contentFilters.videoCards.keywords = parseLines(keywordInput.value);
+    updateDirtyState();
+  });
+  regexInput.addEventListener("input", () => {
+    if (!draft) return;
+    draft.contentFilters.videoCards.regexPatterns = parseLines(regexInput.value);
+    updateDirtyState();
+  });
+
+  return element("section", {
+    attrs: { id: "content-filters", "aria-labelledby": "content-filters-title" },
+    children: [
+      createSectionHeading(
+        "content-filters-title",
+        "内容降噪",
+        "保留要用的页面，只隐藏容易把注意力带走的部分。兼容 Bilibili 原生界面与 BewlyBewly! Ave Mujica。"
+      ),
+      element("div", {
+        className: "content-filter-card card",
+        children: [
+          element("div", {
+            className: "access-toggle-row",
+            children: [
+              element("div", {
+                children: [
+                  element("strong", { text: "隐藏干扰内容" }),
+                  element("p", { text: "关闭后保留下面的选择，再开启即可继续" })
+                ]
+              }),
+              masterToggle.label
+            ]
+          }),
+          element("div", { className: "content-filter-grid", children: elementToggles }),
+          element("div", {
+            className: "content-filter-item content-filter-item--wide",
+            children: [
+              element("div", {
+                children: [
+                  element("strong", { text: "按 / 直达搜索" }),
+                  element("p", { text: "不在输入框中时按 /，光标会直接进入站内搜索" })
+                ]
+              }),
+              shortcutToggle.label
+            ]
+          }),
+          element("div", {
+            className: "video-card-filter",
+            children: [
+              element("div", {
+                className: "access-toggle-row",
+                children: [
+                  element("div", {
+                    children: [
+                      element("strong", { text: "按标题隐藏视频" }),
+                      element("p", { text: "命中关键词或规则的卡片不会出现在信息流和搜索结果中" })
+                    ]
+                  }),
+                  cardToggle.label
+                ]
+              }),
+              element("div", {
+                className: "content-filter-fields",
+                children: [
+                  element("label", {
+                    className: "field",
+                    children: [
+                      element("span", { text: "标题关键词（每行一个）" }),
+                      keywordInput,
+                      element("span", { className: "field__hint", text: "不区分大小写" })
+                    ]
+                  }),
+                  element("label", {
+                    className: "field",
+                    children: [
+                      element("span", { text: "标题规则（高级，每行一个）" }),
+                      regexInput,
+                      element("span", {
+                        className: "field__hint",
+                        text: "不完整或可能拖慢页面的规则会被安全忽略"
+                      })
+                    ]
+                  })
+                ]
+              })
+            ]
+          })
+        ]
+      })
+    ]
   });
 }
 
@@ -308,8 +468,8 @@ function createSectionsArea(): HTMLElement {
     children: [
       createSectionHeading(
         "sections-title",
-        "板块管理",
-        "单独控制每个区域，并设置每日用量与固定专注计划。"
+        "整页专注",
+        "为容易分心的页面设置可访问时长，或在固定时段把入口留在门外。"
       ),
       element("div", {
         className: "section-list",
@@ -323,15 +483,19 @@ function createSectionCard(section: SectionId): HTMLElement {
   if (!draft) return element("article");
   const rule = draft.sectionRules[section];
   const sectionToggle = createToggle(
-    `屏蔽${SECTION_LABELS[section]}`,
+    `专注拦截${SECTION_LABELS[section]}`,
     rule.enabled,
     `section-toggle-${section}`
   );
-  const card = element("article", {
+  const card = element("details", {
     className: "section-card card",
     dataset: { enabled: String(rule.enabled) },
-    attrs: { style: `--section-color: ${SECTION_META[section].color}` }
+    attrs: {
+      style: `--section-color: ${SECTION_META[section].color}`,
+      open: section === "home"
+    }
   });
+  sectionToggle.label.addEventListener("click", (event) => event.stopPropagation());
   sectionToggle.input.addEventListener("change", () => {
     if (!draft) return;
     draft.sectionRules[section].enabled = sectionToggle.input.checked;
@@ -367,7 +531,7 @@ function createSectionCard(section: SectionId): HTMLElement {
       : [
           element("li", {
             className: "schedule-empty",
-            text: "没有计划时，只要板块开关开启，就会全天屏蔽。"
+            text: "尚未设置时段，因此会全天生效。"
           })
         ];
   const addButton = element("button", {
@@ -382,7 +546,7 @@ function createSectionCard(section: SectionId): HTMLElement {
   addButton.addEventListener("click", () => openScheduleDialog(section));
 
   card.append(
-    element("header", {
+    element("summary", {
       className: "section-card__header",
       children: [
         element("div", {
@@ -400,7 +564,17 @@ function createSectionCard(section: SectionId): HTMLElement {
             })
           ]
         }),
-        sectionToggle.label
+        element("span", {
+          className: "section-card__summary-actions",
+          children: [
+            element("span", {
+              className: "section-card__summary",
+              text: `${rule.dailyLimitMinutes ? `每天 ${rule.dailyLimitMinutes} 分钟` : "不限时"} · ${rule.schedules.length > 0 ? `${rule.schedules.length} 个时段` : "全天"}`
+            }),
+            sectionToggle.label,
+            element("span", { className: "section-card__chevron", children: [icon("chevron")] })
+          ]
+        })
       ]
     }),
     element("div", {
@@ -413,7 +587,7 @@ function createSectionCard(section: SectionId): HTMLElement {
             element("div", {
               children: [
                 element("strong", { text: "每日限额" }),
-                element("p", { text: "达到限额后，该板块在当天剩余时间内进入屏蔽状态" })
+                element("p", { text: "用满后，今天将不再打开这个页面" })
               ]
             }),
             element("label", {
@@ -427,8 +601,8 @@ function createSectionCard(section: SectionId): HTMLElement {
           children: [
             element("div", {
               children: [
-                element("h4", { text: "屏蔽计划" }),
-                element("p", { text: "多个计划重叠时，屏蔽仍持续生效" })
+                element("h4", { text: "专注时段" }),
+                element("p", { text: "重叠时段会自动合并" })
               ]
             }),
             addButton
@@ -495,7 +669,7 @@ function createPlanArea(): HTMLElement {
     draft.planMode.watchDurationMinutes,
     1,
     360,
-    "计划视频单次放行时长（分钟）"
+    "每次可观看时长（分钟）"
   );
 
   enabledToggle.input.addEventListener("change", () => {
@@ -529,7 +703,7 @@ function createPlanArea(): HTMLElement {
                 children: [
                   element("strong", { text: "打开 Bilibili 前先查看计划" }),
                   element("p", {
-                    text: "开启后，任意 Bilibili 链接会先回到计划页；只放行从清单中开始的对应视频。"
+                    text: "开启后，打开 Bilibili 会先看到观看清单；从清单开始的视频会在所选时长内打开。"
                   })
                 ]
               }),
@@ -552,7 +726,7 @@ function createPlanArea(): HTMLElement {
                   element("p", { text: "添加、排序、打卡或批量粘贴视频链接" }),
                   element("a", {
                     className: "btn btn--primary",
-                    attrs: { href: "plan.html", target: "_blank", rel: "noreferrer" },
+                    attrs: { href: "plan.html" },
                     children: [icon("calendar"), "打开计划页"]
                   })
                 ]
@@ -568,7 +742,7 @@ function createPlanArea(): HTMLElement {
 function createAccessArea(): HTMLElement {
   if (!draft) return element("section");
   const enabledToggle = createToggle(
-    "临时放行",
+    "临时访问",
     draft.temporaryAccess.enabled,
     "temporary-access-toggle"
   );
@@ -576,9 +750,9 @@ function createAccessArea(): HTMLElement {
     draft.temporaryAccess.durationMinutes,
     1,
     60,
-    "每次放行时长（分钟）"
+    "每次访问时长（分钟）"
   );
-  const usesInput = numberInput(draft.temporaryAccess.maxUsesPerDay, 0, 50, "每日最多放行次数");
+  const usesInput = numberInput(draft.temporaryAccess.maxUsesPerDay, 0, 50, "每天最多访问次数");
 
   enabledToggle.input.addEventListener("change", () => {
     if (!draft) return;
@@ -605,7 +779,7 @@ function createAccessArea(): HTMLElement {
     children: [
       createSectionHeading(
         "access-title",
-        "临时放行",
+        "临时访问",
         "需要临时访问时，从扩展弹窗获得一段有边界的自由时间。"
       ),
       element("div", {
@@ -616,8 +790,8 @@ function createAccessArea(): HTMLElement {
             children: [
               element("div", {
                 children: [
-                  element("strong", { text: "允许临时放行" }),
-                  element("p", { text: "仅对当前板块生效，到期后自动恢复屏蔽" })
+                  element("strong", { text: "允许临时访问" }),
+                  element("p", { text: "只对当前页面生效，到期后自动恢复专注拦截" })
                 ]
               }),
               enabledToggle.label
@@ -626,13 +800,8 @@ function createAccessArea(): HTMLElement {
           element("div", {
             className: "access-fields",
             children: [
-              createField(
-                "每次时长",
-                "建议保持短暂，避免一次放行变成无限浏览",
-                durationInput,
-                "分钟"
-              ),
-              createField("每日次数", "用完后当天不再显示临时放行入口", usesInput, "次")
+              createField("每次时长", "选择一个足够完成当前任务的时长", durationInput, "分钟"),
+              createField("每日次数", "用完后当天不再显示临时访问入口", usesInput, "次")
             ]
           })
         ]
@@ -664,7 +833,7 @@ function createPrivacyArea(): HTMLElement {
             children: [
               element("strong", { text: "本地优先，观看清单由你主动管理" }),
               element("p", {
-                text: "使用统计只保存日期、板块与累计秒数；计划模式会在本机保存你主动添加的 BV 号、标题和完成状态，不保存账号密码或 Cookie。"
+                text: "使用时间和观看清单只保存在这台设备。你可以随时恢复默认设置或清除使用记录。"
               })
             ]
           }),
@@ -842,7 +1011,10 @@ function openScheduleDialog(section: SectionId, existing?: BlockingSchedule): vo
                 text: existing ? "编辑专注计划" : `为${SECTION_LABELS[section]}添加计划`,
                 attrs: { id: titleId }
               }),
-              element("p", { className: "muted", text: "计划只在所选日期和时段内触发屏蔽。" })
+              element("p", {
+                className: "muted",
+                text: "到了所选日期和时间，这个页面会进入专注拦截。"
+              })
             ]
           }),
           closeButton
@@ -1069,6 +1241,15 @@ function cloneSettings(settings: FocusSettings): FocusSettings {
     enabled: settings.enabled,
     temporaryAccess: { ...settings.temporaryAccess },
     planMode: { ...settings.planMode },
+    contentFilters: {
+      ...settings.contentFilters,
+      hiddenElements: { ...settings.contentFilters.hiddenElements },
+      videoCards: {
+        ...settings.contentFilters.videoCards,
+        keywords: [...settings.contentFilters.videoCards.keywords],
+        regexPatterns: [...settings.contentFilters.videoCards.regexPatterns]
+      }
+    },
     sectionRules: Object.fromEntries(
       SECTION_IDS.map((section) => [
         section,
@@ -1082,6 +1263,17 @@ function cloneSettings(settings: FocusSettings): FocusSettings {
       ])
     ) as FocusSettings["sectionRules"]
   };
+}
+
+function parseLines(value: string): string[] {
+  return [
+    ...new Set(
+      value
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+    )
+  ].slice(0, 50);
 }
 
 function snapshot(settings: FocusSettings): string {
