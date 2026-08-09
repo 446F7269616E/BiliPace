@@ -83,4 +83,36 @@ describe("focus decisions", () => {
       reason: "focus-disabled"
     });
   });
+
+  it("lets explicit time rules take precedence over the daily limit", async () => {
+    const monday = new Date(2026, 7, 3, 12);
+    await settings.update({
+      sectionRules: {
+        video: {
+          enabled: true,
+          dailyLimitMinutes: 1,
+          schedules: [
+            {
+              id: "lunch",
+              name: "午间",
+              enabled: true,
+              effect: "allow",
+              days: [1],
+              startTime: "12:00",
+              endTime: "14:00"
+            }
+          ]
+        }
+      }
+    });
+    await analytics.recordInterval("video", monday.getTime() - 60_000, monday.getTime());
+
+    expect(await decisions.decide("https://www.bilibili.com/video/BV1test", monday)).toMatchObject({
+      blocked: false,
+      reason: "outside-schedule"
+    });
+    expect(
+      await decisions.decide("https://www.bilibili.com/video/BV1test", new Date(2026, 7, 3, 15))
+    ).toMatchObject({ blocked: true, reason: "blocked" });
+  });
 });

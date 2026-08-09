@@ -1,17 +1,24 @@
 import type { BrowserContext } from "@playwright/test";
 
 export interface MockSettings {
-  schemaVersion: 1;
+  schemaVersion: 2;
   enabled: boolean;
   sectionRules: Record<
     string,
     { enabled: boolean; dailyLimitMinutes: number | null; schedules: unknown[] }
   >;
   temporaryAccess: { enabled: boolean; durationMinutes: number; maxUsesPerDay: number };
+  planMode: { enabled: boolean; watchDurationMinutes: number };
+  contentFilters: {
+    enabled: boolean;
+    hiddenElements: Record<string, boolean>;
+    videoCards: { enabled: boolean; keywords: string[]; regexPatterns: string[] };
+    slashToSearch: boolean;
+  };
 }
 
 const initialSettings: MockSettings = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   enabled: true,
   sectionRules: {
     home: { enabled: true, dailyLimitMinutes: null, schedules: [] },
@@ -22,7 +29,22 @@ const initialSettings: MockSettings = {
     bangumi: { enabled: false, dailyLimitMinutes: null, schedules: [] },
     search: { enabled: false, dailyLimitMinutes: null, schedules: [] }
   },
-  temporaryAccess: { enabled: true, durationMinutes: 5, maxUsesPerDay: 3 }
+  temporaryAccess: { enabled: true, durationMinutes: 5, maxUsesPerDay: 3 },
+  planMode: { enabled: false, watchDurationMinutes: 45 },
+  contentFilters: {
+    enabled: true,
+    hiddenElements: {
+      "home-feed": false,
+      "dynamic-feed": false,
+      "related-videos": true,
+      comments: false,
+      "search-suggestions": true,
+      ads: true,
+      "top-navigation": false
+    },
+    videoCards: { enabled: false, keywords: [], regexPatterns: [] },
+    slashToSearch: true
+  }
 };
 
 /**
@@ -76,7 +98,12 @@ export async function installWebExtensionMock(context: BrowserContext): Promise<
         version?: number;
         requestId?: string;
         type?: string;
-        payload?: { patch?: Partial<MockSettings>; period?: string };
+        payload?: {
+          patch?: Partial<MockSettings>;
+          period?: string;
+          enabled?: boolean;
+          watchDurationMinutes?: number;
+        };
       }) {
         let result: unknown;
         const payload = message.payload ?? {};
@@ -102,6 +129,17 @@ export async function installWebExtensionMock(context: BrowserContext): Promise<
           case "RESET_SETTINGS":
             settings = clone(seed);
             result = ok(settings);
+            break;
+          case "SET_PLAN_MODE":
+            settings = {
+              ...settings,
+              planMode: {
+                enabled: payload.enabled ?? settings.planMode.enabled,
+                watchDurationMinutes:
+                  payload.watchDurationMinutes ?? settings.planMode.watchDurationMinutes
+              }
+            };
+            result = ok({ settings: settings.planMode, queue: { schemaVersion: 1, items: [] } });
             break;
           case "GET_USAGE":
             result = ok({

@@ -216,5 +216,5 @@ export function assertAppRoot(): HTMLElement {
 
 export function describeError(error: unknown): string {
   console.debug("BiliPace interface action did not complete", error);
-  return "暂时没有完成，请重试。";
+  return "操作失败，请重试。";
 }

@@ -49,12 +49,21 @@ const BILIBILI_ADAPTER: ContentSiteAdapter = {
 };
 
 const BEWLYBEWLY_ADAPTER: ContentSiteAdapter = {
-  roots: (document) => {
-    const host = document.querySelector<HTMLElement>("#bewly[data-version]");
-    return host?.shadowRoot ? [host.shadowRoot] : [];
-  },
+  // Ave Mujica mounts an open shadow root on a direct `#bewly` host. Do not
+  // depend on its version attribute: development builds and mount transitions
+  // can omit it or briefly leave more than one host in the document.
+  roots: (document) =>
+    [...document.querySelectorAll<HTMLElement>("#bewly")]
+      .map((host) => host.shadowRoot)
+      .filter((root): root is ShadowRoot => root !== null),
   hiddenElementSelectors: {
-    "search-suggestions": ["#search-suggestion"]
+    // Cards are a stable component boundary in Ave. Hiding them keeps the
+    // surrounding navigation available and safely degrades if Ave changes its
+    // page layout.
+    "home-feed": [".video-card"],
+    "dynamic-feed": [".video-card"],
+    "search-suggestions": ["#search-suggestion"],
+    "top-navigation": ["header:has(.right-side):has(.logo)"]
   },
   videoCardSelectors: [".video-card"],
   videoTitleSelectors: ["h3", "[title]"],

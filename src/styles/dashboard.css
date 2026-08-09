@@ -115,8 +115,7 @@
 }
 
 .chart-card,
-.section-breakdown,
-.insights-card {
+.section-breakdown {
   padding: var(--space-5);
 }
 
@@ -133,15 +132,13 @@
 }
 
 .chart-card__header h2,
-.section-breakdown h2,
-.insights-card h2 {
+.section-breakdown h2 {
   font-size: 16px;
   letter-spacing: -0.02em;
 }
 
 .chart-card__header p,
-.section-breakdown > p,
-.insights-card > p {
+.section-breakdown > p {
   margin-top: 3px;
   color: var(--color-text-muted);
   font-size: 11px;
@@ -296,50 +293,6 @@
   height: 100%;
   background: var(--section-color);
   border-radius: inherit;
-}
-
-.insight-list {
-  display: grid;
-  gap: var(--space-3);
-  list-style: none;
-  margin: var(--space-5) 0 0;
-  padding: 0;
-}
-
-.insight-item {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: start;
-  gap: 10px;
-  padding: 11px;
-  background: var(--color-surface-soft);
-  border-radius: var(--radius-sm);
-}
-
-.insight-item__icon {
-  display: grid;
-  width: 28px;
-  height: 28px;
-  place-items: center;
-  color: var(--color-brand-strong);
-  background: var(--color-brand-soft);
-  border-radius: 9px;
-}
-
-.insight-item__icon .icon {
-  width: 15px;
-  height: 15px;
-}
-
-.insight-item strong {
-  display: block;
-  font-size: 11px;
-}
-
-.insight-item p {
-  margin-top: 2px;
-  color: var(--color-text-muted);
-  font-size: 10px;
 }
 
 .dashboard-empty {

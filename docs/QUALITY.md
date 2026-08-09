@@ -13,7 +13,7 @@ BiliPace 的单一用途是：**帮助用户在哔哩哔哩站内按自己设定
 - 屏蔽、计划、临时放行和统计都必须服务于这一用途。
 - 不注入广告，不替换搜索，不追踪站外浏览，不抓取视频、评论、账号、Cookie 或个人资料。
 - 不宣称与哔哩哔哩、Google、Mozilla 或 Apple 存在隶属、认可或合作关系。
-- 商店描述、首次引导、权限理由、隐私政策与实际行为必须一致。
+- 商店描述、权限理由、隐私政策与实际行为必须一致。
 
 ## 2. Chrome MV3 权限预算
 
@@ -94,13 +94,13 @@ Playwright 的 Firefox 项目用于验证 popup/options/dashboard/plan 的共享
 
 ## 6. 自动化测试层次与命令约定
 
-| 层                    | 目标                                          | 发布门禁                              |
-| --------------------- | --------------------------------------------- | ------------------------------------- |
-| 单元                  | 路由分类、计划判定、统计归桶、schema 迁移     | 边界分支全覆盖；时间逻辑用 fake clock |
-| 组件/契约             | 三个扩展页、可访问名称、storage adapter       | Chromium + Firefox Web UI 项目通过    |
-| Chromium 真实扩展 E2E | MV3 Service Worker、页面加载、导航、持久化    | `tests/e2e/extension.spec.ts` 通过    |
-| 静态产物审计          | manifest 权限、CSP、远程代码、source map/密钥 | 三个产物均通过                        |
-| 平台候选验收          | AMO、Safari 权限/签名/升级                    | 清单有版本化证据                      |
+| 层                    | 目标                                                | 发布门禁                              |
+| --------------------- | --------------------------------------------------- | ------------------------------------- |
+| 单元                  | 路由分类、时间规则、计划判定、统计归桶、schema 迁移 | 边界分支全覆盖；时间逻辑用 fake clock |
+| 组件/契约             | 四个扩展页、可访问名称、storage adapter             | Chromium + Firefox Web UI 项目通过    |
+| Chromium 真实扩展 E2E | MV3 Service Worker、页面加载、导航、持久化          | `tests/e2e/extension.spec.ts` 通过    |
+| 静态产物审计          | manifest 权限、CSP、远程代码、source map/密钥       | 三个产物均通过                        |
+| 平台候选验收          | AMO、Safari 权限/签名/升级                          | 清单有版本化证据                      |
 
 测试实现位于 `tests/e2e/`。预期命令由根 `package.json` 提供：`npm run build`、`npm run test`、`npm run test:e2e`。首次运行先执行 `npx playwright install chromium firefox`；真实扩展项目必须使用 Playwright bundled Chromium，因为新版 branded Chrome 不再支持 E2E 依赖的命令行侧载参数。测试失败时保留 trace、截图与控制台错误，不提交运行产物。
 
@@ -109,7 +109,7 @@ Playwright 的 Firefox 项目用于验证 popup/options/dashboard/plan 的共享
 - [ ] Chrome 产物没有超出第 2 节预算的权限，且没有远程可执行代码。
 - [ ] 统计只在 Bilibili 标签页可见且窗口有效聚焦时累计；休眠、崩溃或关机不能产生大段虚假时长。
 - [ ] SPA 导航后分类、屏蔽与计时能切换，且没有重复计时器/重复遮罩。
-- [ ] 屏蔽计划、临时放行、跨午夜、时区/DST 与系统时钟变化已验收。
+- [ ] 可用/不可用时段、白名单优先级、每日限额、临时访问、跨午夜、时区/DST 与系统时钟变化已验收。
 - [ ] 计划模式只放行从计划页启动的精确 BVID；其他子域、SPA 跳转、相关视频、过期/完成/删除后都会回到计划页。
 - [ ] 批量导入无网络请求；官方账号导入明确不可用且不读取 Cookie、密码或私有 API。
 - [ ] 清空数据立即作用于 storage 与所有打开的扩展页；无隐蔽副本。
@@ -118,8 +118,8 @@ Playwright 的 Firefox 项目用于验证 popup/options/dashboard/plan 的共享
 - [ ] `PRIVACY.md`、商店数据披露和实际网络行为一致；抓包确认没有非 Bilibili/商店更新流量。
 - [ ] 公共仓库不含密钥、签名证书、Apple provisioning profile、AMO/CWS API 凭据或用户测试数据。
 - [ ] 原生 Bilibili 的内容降噪完整可用；Ave Mujica 下核心计时、整页专注、计划模式与基础降噪安全降级，ShadowRoot 重挂载后可恢复，选择器失效不误隐藏整页。
-- [ ] 专注中心、观看清单、使用洞察、专注设置全向互通，当前页可识别、同标签跳转且没有导航死路。
-- [ ] 用户界面符合 [UX_WRITING.md](./UX_WRITING.md)：无原始错误、内部模块/配置术语或依赖布局位置的说明。
+- [ ] 仪表盘、计划、配置、设置通过固定左侧菜单全向互通，当前页可识别且没有导航死路。
+- [ ] 用户界面符合 [UX_WRITING.md](./UX_WRITING.md)：无教程卡、口号、原始错误、内部模块或开发配置说明。
 
 ## 8. 官方资料
 

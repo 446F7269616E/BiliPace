@@ -30,11 +30,11 @@ adapters: Chromium SW / Firefox event page / Safari WebExtension
 
 ## 页面分类
 
-页面分类器接收规范化 URL，只返回受支持的板块枚举或 `other`。板块与 URL 规则集中维护并有表驱动测试；禁止各 UI/content script 重复正则。必须覆盖 Bilibili SPA 的 `pushState`、`replaceState`、`popstate` 及站点自定义导航导致的 URL 变化。
+页面分类器接收规范化 URL，只返回受支持的板块枚举或 `null`。板块与 URL 规则集中维护并有表驱动测试；禁止各 UI/content script 重复正则。必须覆盖 Bilibili SPA 的 `pushState`、`replaceState`、`popstate` 及站点自定义导航导致的 URL 变化。
 
-未知路由采用安全降级：不屏蔽、可归入 `other` 的聚合时长，但不得记录完整 URL。站点 DOM 选择器失效时不得把整个网站永久隐藏；应显示可退出的扩展自有遮罩或停止增强，并记录本机可诊断状态。
+未知路由采用安全降级：不屏蔽、不计时，也不记录完整 URL。站点 DOM 选择器失效时不得把整个网站永久隐藏；应显示可退出的扩展自有遮罩或停止增强，并记录本机可诊断状态。
 
-BewlyBewly! Ave Mujica 采用最小兼容边界：已知的 `?page=Home/Search/Anime/Moments` 映射为统一板块，未知值按未管理页面安全放行；计时、整页专注和计划模式始终只使用顶层 URL，不扫描 iframe，也不启用 `all_frames`，避免重复会话与重定向。开放 Shadow DOM 仅通过独立 site adapter 暴露为可选查询根，用于稳定的搜索联想、视频卡片标题规则和搜索快捷键；收到 `bewlyMounted` 后按 root 引用恢复，选择器或 ShadowRoot 不可用时直接降级。
+BewlyBewly! Ave Mujica 采用最小兼容边界：已知的 `?page=Home/Search/Anime/Moments` 映射为统一板块，未知值按未管理页面安全放行；计时、整页专注和计划模式始终只使用顶层 URL，不扫描 iframe，也不启用 `all_frames`。开放 `#bewly` ShadowRoot 由独立 site adapter 处理首页/动态视频卡片、搜索联想、顶部导航、标题规则和搜索快捷键；挂载事件监听 `window` 的 `bewlyMounted`，并按 root 引用恢复重挂载。整页遮罩位于 `documentElement`，在 Ave 重建 `body` 时恢复 inert 与遮罩状态。
 
 ## 内容降噪层
 
@@ -48,7 +48,9 @@ BewlyBewly! Ave Mujica 采用最小兼容边界：已知的 `?page=Home/Search/A
 
 ## 全页信息架构
 
-`home.html` 是全页一级入口“专注中心”；`plan.html`、`dashboard.html`、`options.html` 是并列二级页。它们使用 `src/ui/page-navigation.ts` 的共享导航，固定顺序、同标签跳转、当前页 `aria-current`、品牌与面包屑返回专注中心。popup 只承担快速状态与开关，不作为全页返回目标。
+四个全页入口采用同级结构：`dashboard.html` 为“仪表盘”，`plan.html` 为“计划”，`options.html` 为“配置”，`home.html` 为“设置”。它们使用 `src/ui/page-navigation.ts` 的固定左侧菜单，保持该顺序、同标签跳转和当前页 `aria-current`；窄屏降级为横向导航。popup 只承担快速状态与入口。
+
+计划页包含两种视图：纵向列表按 `addedAt` 排序；思维导图按 `order` 横向排列，拖拽或键盘移动后通过 `REORDER_PLAN_ITEMS` 持久化。视图偏好保存为扩展页本地键 `bilipace.plan.view`，不进入观看计划数据。
 
 所有用户可见文本遵守 [UX_WRITING.md](./UX_WRITING.md)。UI 不直接解释后台异常、provider 状态或内部实现；调试信息只进入本机开发日志。
 
@@ -65,11 +67,13 @@ content script 发出 `SESSION_START`、`HEARTBEAT`、`ROUTE_CHANGE`、`SESSION_
 
 墙上时间用于日期展示和计划，单调时间用于单次活跃区间差值（平台可用时）。系统时钟回拨、时区变化和 DST 都不得生成负数或重复统计。
 
-## 计划与临时放行
+## 时间规则与临时放行
 
-- 计划判定是纯函数：`schedule + localDateTime -> active/inactive + nextTransition`。
-- 跨午夜计划按明确语义拆分或按起始日归属，并在 UI 中说明。
-- 冲突计划采用“更严格规则生效”，除非存在用户显式创建且未过期的临时放行。
+- 时间判定是纯函数：`weekday + localTime + rules -> allow/block/defer`。
+- 规则先按星期匹配，再按本地 `HH:mm` 半开区间匹配。跨午夜时段归属开始日，并延续到次日结束时间。
+- `allow` 是 `block` 的显式例外：同一时刻同时命中时可用规则优先。只要存在启用的可用规则，未命中任何可用时段时默认不可用。
+- 命中可用规则时不受每日限额影响；未命中显式规则时，再由每日限额和板块默认行为决定。
+- 旧版未包含 `effect` 的时段在读取时迁移为 `block`；存储边界统一归一化为设置 schema v2，单板块最多 64 条时间规则。
 - 临时放行存储绝对过期时间和作用域，过期即失效；重启浏览器不能延长。
 - `alarms` 仅用于唤醒和刷新，不作为真实时间来源；每次唤醒重新计算状态。
 
@@ -94,6 +98,8 @@ content script 发出 `SESSION_START`、`HEARTBEAT`、`ROUTE_CHANGE`、`SESSION_
 - `bilifocus.plan-access.v1`
 
 每个值包含 `schemaVersion`，读取时先验证再迁移。迁移必须幂等、保留可识别数据，并在失败时保留原值、回退到安全默认值；禁止静默覆盖损坏数据。正式类型以核心模块定义为准，变更时同步更新此文档和 fixtures。
+
+`bilifocus.settings.v1` 的逻辑键保持不变，当前值使用设置 schema v2；v1 时间段读取时补为 `effect: "block"`。UI 视图偏好使用独立的 `bilipace.plan.view`，值仅允许 `list` 或 `mindmap`。
 
 数据最小化约束：统计只存本地日期、板块枚举和非负整数秒数。观看计划只在用户主动添加时保存 BV 号、canonical URL、标题、顺序、来源和完成状态。其余浏览过程不存完整 URL、标题、视频/用户 ID、账号、Cookie、搜索词或页面正文。
 

@@ -99,7 +99,7 @@ function renderError(message: string): void {
             element("div", {
               children: [
                 element("div", { className: "state-view__icon", children: [icon("warning")] }),
-                element("h2", { text: "暂时看不到专注状态" }),
+                element("h2", { text: "专注状态加载失败" }),
                 element("p", { text: message }),
                 retry
               ]
@@ -132,7 +132,7 @@ function renderPopup(data: PopupData): void {
             children: [
               element("strong", { text: focusActive ? "专注保护已开启" : "专注保护已暂停" }),
               element("small", {
-                text: focusActive ? `正在管理 ${totalBlocked} 个板块` : "规则已保留，开启即可继续"
+                text: focusActive ? `已启用 ${totalBlocked} 个板块` : "已关闭"
               })
             ]
           })
@@ -169,7 +169,7 @@ function renderPopup(data: PopupData): void {
     createActions(),
     element("p", {
       className: "popup-footer",
-      text: "数据仅保存在你的浏览器中 · BiliPace 非哔哩哔哩官方产品"
+      text: "数据保存在当前浏览器 · BiliPace 非官方项目"
     })
   );
   app.replaceChildren(shell);
@@ -187,7 +187,7 @@ function createPlanModeControl(data: PopupData): HTMLElement {
     planToggle.input.disabled = true;
     try {
       const planState = await sendRequest({ type: "SET_PLAN_MODE", enabled });
-      toast(enabled ? "计划模式已开启，访问 Bilibili 会先查看清单" : "计划模式已暂停");
+      toast(enabled ? "计划模式已开启" : "计划模式已关闭");
       renderPopup({
         ...data,
         settings: { ...data.settings, planMode: planState.settings }
@@ -218,9 +218,7 @@ function createPlanModeControl(data: PopupData): HTMLElement {
                 children: [
                   element("strong", { text: active ? "计划模式已开启" : "计划模式未开启" }),
                   element("small", {
-                    text: active
-                      ? "打开 Bilibili 前先进入观看计划"
-                      : "开启后，只观看清单中主动开始的视频"
+                    text: active ? "当前生效" : "已关闭"
                   })
                 ]
               })
@@ -249,12 +247,12 @@ function createHeader(): HTMLElement {
   const settingsLink = element("a", {
     className: "btn btn--icon",
     attrs: {
-      href: "options.html",
+      href: "home.html",
       target: "_blank",
       rel: "noreferrer",
       title: "打开设置",
       "aria-label": "打开设置",
-      "data-testid": "popup-open-options"
+      "data-testid": "popup-open-settings"
     },
     children: [icon("settings")]
   });
@@ -268,7 +266,7 @@ function createTodayCard(usage: UsageSummary, tracking: TrackingStatus): HTMLEle
   }, null);
   const detail = topSection
     ? `最多用于${SECTION_LABELS[topSection]} · ${formatDuration(usage.bySection[topSection], true)}`
-    : "今天还没有记录，专注从此刻开始";
+    : "暂无使用记录";
   const liveLabel = tracking.isTracking
     ? `正在计时 · ${tracking.section ? SECTION_LABELS[tracking.section] : "Bilibili"}`
     : tracking.section === null
@@ -391,10 +389,15 @@ function createPagePolicy(data: PopupData): HTMLElement {
 }
 
 function createActions(): HTMLElement {
-  const homeLink = element("a", {
+  const dashboardLink = element("a", {
     className: "btn btn--primary popup-actions__home",
-    attrs: { href: "home.html", target: "_blank", rel: "noreferrer" },
-    children: [icon("home"), "专注中心"]
+    attrs: {
+      href: "dashboard.html",
+      target: "_blank",
+      rel: "noreferrer",
+      "data-testid": "popup-open-dashboard"
+    },
+    children: [icon("bar-chart"), "仪表盘"]
   });
   const planLink = element("a", {
     className: "btn",
@@ -404,22 +407,22 @@ function createActions(): HTMLElement {
       rel: "noreferrer",
       "data-testid": "popup-open-plan"
     },
-    children: [icon("calendar"), "观看计划"]
+    children: [icon("calendar"), "计划"]
   });
-  const dashboardLink = element("a", {
+  const configLink = element("a", {
     className: "btn",
     attrs: {
-      href: "dashboard.html",
+      href: "options.html",
       target: "_blank",
       rel: "noreferrer",
-      "data-testid": "popup-open-dashboard"
+      "data-testid": "popup-open-config"
     },
-    children: [icon("bar-chart"), "查看仪表盘"]
+    children: [icon("settings"), "配置"]
   });
   return element("nav", {
     className: "popup-actions",
     attrs: { "aria-label": "扩展页面" },
-    children: [homeLink, planLink, dashboardLink]
+    children: [dashboardLink, planLink, configLink]
   });
 }
 
@@ -448,18 +451,18 @@ function createToggle(
 }
 
 function describeDecision(decision: PageDecision | null): string {
-  if (!decision) return "打开一个 Bilibili 页面即可查看状态";
+  if (!decision) return "未检测到 Bilibili 页面";
   switch (decision.reason) {
     case "not-managed":
       return "仅管理 Bilibili 的指定板块";
     case "focus-disabled":
-      return "专注保护总开关已暂停";
+      return "专注保护已关闭";
     case "rule-disabled":
-      return "这个页面没有开启专注拦截";
+      return "未启用此板块";
     case "outside-schedule":
-      return "当前不在设定的专注时段内";
+      return "当前时段可用";
     case "daily-limit":
-      return "已达到该板块的今日使用限额";
+      return "今日限额已用完";
     case "temporary-access": {
       if (!decision.temporaryAccessExpiresAt) return "临时访问已开启";
       const time = new Date(decision.temporaryAccessExpiresAt).toLocaleTimeString("zh-CN", {
@@ -469,6 +472,6 @@ function describeDecision(decision: PageDecision | null): string {
       return `可以访问到 ${time}`;
     }
     case "blocked":
-      return `今天还可临时访问 ${decision.temporaryAccessUsesRemaining} 次`;
+      return "当前时段不可用";
   }
 }

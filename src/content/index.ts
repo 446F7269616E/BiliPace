@@ -17,7 +17,7 @@ let lastSeenUrl = window.location.href;
 let evaluationGeneration = 0;
 let mediaObserver: MutationObserver | null = null;
 let bodyWasInert = false;
-let bodyInertManaged = false;
+let managedBody: HTMLElement | null = null;
 let contentStarted = false;
 let planCheckGeneration = 0;
 let initializationRetry: ReturnType<typeof setTimeout> | null = null;
@@ -179,6 +179,15 @@ function renderBlockPage(decision: PageDecision, url: string): void {
   const host = document.createElement("div");
   host.id = ROOT_ID;
   host.setAttribute("role", "presentation");
+  // Keep the blocker above extension-replaced homepages even when their
+  // light-DOM styles target every div on the page.
+  host.style.setProperty("position", "fixed", "important");
+  host.style.setProperty("inset", "0", "important");
+  host.style.setProperty("z-index", "2147483647", "important");
+  host.style.setProperty("display", "block", "important");
+  host.style.setProperty("visibility", "visible", "important");
+  host.style.setProperty("opacity", "1", "important");
+  host.style.setProperty("pointer-events", "auto", "important");
   const shadow = host.attachShadow({ mode: "open" });
   const style = document.createElement("style");
   style.textContent = BLOCK_PAGE_CSS;
@@ -192,16 +201,16 @@ function renderBlockPage(decision: PageDecision, url: string): void {
 
   const mark = element("div", "mark", "B");
   mark.setAttribute("aria-hidden", "true");
-  const eyebrow = element("p", "eyebrow", "BiliPace · 专注拦截");
-  const heading = element("h1", "", "先把注意力留给重要的事");
+  const eyebrow = element("p", "eyebrow", "BiliPace");
+  const heading = element("h1", "", "当前页面已受限");
   heading.id = "bilifocus-title";
 
   const sectionLabel = decision.section ? SECTION_LABELS[decision.section] : "此页面";
   const reasonText =
     decision.reason === "daily-limit"
-      ? `你今天为${sectionLabel}设置的时间额度已经用完。`
-      : `现在是你为${sectionLabel}安排的专注时间。`;
-  const message = element("p", "message", `${reasonText}稍后再回来，内容会一直在这里。`);
+      ? `${sectionLabel}的今日使用额度已用完。`
+      : `${sectionLabel}在当前时段不可用。`;
+  const message = element("p", "message", reasonText);
   message.id = "bilifocus-message";
 
   const actions = element("div", "actions");
@@ -215,25 +224,26 @@ function renderBlockPage(decision: PageDecision, url: string): void {
 
   let allowButton: HTMLButtonElement | null = null;
   if (decision.canRequestTemporaryAccess) {
-    allowButton = element("button", "primary", "暂时访问");
+    allowButton = element("button", "primary", "临时访问");
     allowButton.type = "button";
     actions.append(allowButton);
   }
 
-  const hintText = decision.canRequestTemporaryAccess
-    ? `今天还可临时访问 ${decision.temporaryAccessUsesRemaining} 次。时长由你在设置中决定。`
-    : "你可以在 BiliPace 设置中调整板块、计划和每日额度。";
-  const hint = element("p", "hint", hintText);
+  const hint = decision.canRequestTemporaryAccess
+    ? element("p", "hint", `今日还可临时访问 ${decision.temporaryAccessUsesRemaining} 次。`)
+    : null;
   const status = element("div", "status");
   status.setAttribute("role", "status");
   status.setAttribute("aria-live", "polite");
 
-  card.append(mark, eyebrow, heading, message, actions, hint, status);
+  card.append(mark, eyebrow, heading, message, actions);
+  if (hint) card.append(hint);
+  card.append(status);
   backdrop.append(card);
   shadow.append(style, backdrop);
   document.documentElement.append(host);
   setPageInert(true);
-  startMediaGuard();
+  startMediaGuard(host);
 
   allowButton?.addEventListener("click", () => void requestTemporaryAccess());
 
@@ -259,33 +269,42 @@ function renderBlockPage(decision: PageDecision, url: string): void {
 }
 
 function removeBlockPage(): void {
-  const host = document.getElementById(ROOT_ID);
-  if (host) host.remove();
-  if (bodyInertManaged && document.body) {
-    document.body.inert = bodyWasInert;
-    bodyInertManaged = false;
-  }
   mediaObserver?.disconnect();
   mediaObserver = null;
+  const host = document.getElementById(ROOT_ID);
+  if (host) host.remove();
+  restoreManagedBody();
 }
 
 function setPageInert(inert: boolean): void {
-  if (!document.body || !inert || bodyInertManaged) return;
+  if (!document.body || !inert || managedBody === document.body) return;
+  restoreManagedBody();
   bodyWasInert = document.body.inert;
   document.body.inert = true;
-  bodyInertManaged = true;
+  managedBody = document.body;
 }
 
-function startMediaGuard(): void {
+function restoreManagedBody(): void {
+  if (!managedBody) return;
+  managedBody.inert = bodyWasInert;
+  managedBody = null;
+}
+
+function startMediaGuard(host: HTMLElement): void {
   mediaObserver?.disconnect();
   mediaObserver = new MutationObserver((mutations) => {
+    // Ave rewrites the homepage body during startup. Keep the extension-owned
+    // blocker outside that body and restore it immediately if another mount
+    // transition removes or replaces the surrounding document structure.
+    if (!host.isConnected && document.documentElement) document.documentElement.append(host);
+    setPageInert(true);
     for (const mutation of mutations) {
       for (const node of mutation.addedNodes) {
         if (node instanceof Element) pauseMedia(node);
       }
     }
   });
-  mediaObserver.observe(document.documentElement, { childList: true, subtree: true });
+  mediaObserver.observe(document, { childList: true, subtree: true });
 }
 
 function pauseMedia(root: ParentNode): void {

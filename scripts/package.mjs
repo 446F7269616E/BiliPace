@@ -5,7 +5,16 @@ import path from "node:path";
 import process from "node:process";
 
 const root = process.cwd();
+/** @type {unknown} */
 const packageMetadata = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
+if (
+  typeof packageMetadata !== "object" ||
+  packageMetadata === null ||
+  !("version" in packageMetadata) ||
+  !("name" in packageMetadata)
+) {
+  throw new Error("Invalid package metadata");
+}
 const version = String(packageMetadata.version);
 const packageName = String(packageMetadata.name);
 if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) {

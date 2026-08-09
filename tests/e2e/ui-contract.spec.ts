@@ -20,7 +20,7 @@ test("popup has semantic, keyboard reachable primary actions", async ({ page }) 
 
   await expect(page.getByRole("checkbox", { name: /^(开启|暂停)专注保护$/ })).toBeVisible();
   await expect(page.getByRole("link", { name: "打开设置" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "查看仪表盘" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "仪表盘", exact: true })).toBeVisible();
   await expect(page.getByTestId("popup-temp-access")).toBeVisible();
   await expect(page.getByTestId("popup-today-time")).not.toBeEmpty();
 
@@ -32,8 +32,8 @@ test("popup has semantic, keyboard reachable primary actions", async ({ page }) 
 test("options exposes labelled section rules and scheduling", async ({ page }) => {
   await page.goto(pathToFileURL(path.join(buildRoot, "options.html")).href);
 
-  await expect(page.getByRole("checkbox", { name: /屏蔽首页/ })).toBeVisible();
-  await expect(page.getByRole("checkbox", { name: /屏蔽动态/ })).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: /专注拦截首页/ })).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: /专注拦截动态/ })).toBeVisible();
   await expect(page.getByTestId("schedule-add")).toBeVisible();
   await expect(page.getByTestId("settings-save")).toBeVisible();
 });

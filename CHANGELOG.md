@@ -4,6 +4,25 @@ All notable changes to BiliPace will be documented in this file. The format foll
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-09
+
+### Added
+
+- Added recurring per-section allowlists and blocklists by weekday and local time, including cross-midnight ranges and morning, midday, evening and meal presets.
+- Added list and horizontal drag-to-reorder mind-map views for the local watch plan.
+
+### Changed
+
+- Replaced the full-page top navigation with a shared left sidebar for Dashboard, Plan, Configuration and Settings.
+- Split focus and data controls into Settings while keeping content filters, section limits and time rules in Configuration.
+- Replaced tutorial-style and recommendation-style interface copy with direct labels, states and actions.
+- Migrated stored focus settings to schema version 2 while retaining the existing storage key and treating legacy schedules as block rules.
+
+### Fixed
+
+- Fixed Ave Mujica content blocking by responding to its window-level mount event and applying filters inside every open `#bewly` ShadowRoot.
+- Kept whole-page blocking active when Ave Mujica replaces the document body and restored interactivity when access becomes available.
+
 ## [0.3.1] - 2026-08-09
 
 ### Changed

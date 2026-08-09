@@ -50,9 +50,10 @@ test("packaged manifest stays inside the reviewed permission budget", () => {
 
 for (const [fileName, title] of [
   ["popup.html", "BiliPace"],
-  ["options.html", "设置 · BiliPace"],
-  ["dashboard.html", "使用洞察 · BiliPace"],
-  ["plan.html", "观看计划 · BiliPace"]
+  ["dashboard.html", "仪表盘 · BiliPace"],
+  ["plan.html", "计划 · BiliPace"],
+  ["options.html", "配置 · BiliPace"],
+  ["home.html", "设置 · BiliPace"]
 ] as const) {
   test(`${fileName} loads as a real MV3 extension page`, async ({ openExtensionPage }) => {
     const page = await openExtensionPage(fileName);
@@ -88,7 +89,8 @@ test("popup exposes the primary focus actions and receives a background response
 
   await expect(page.getByTestId("popup-focus-toggle")).toBeVisible();
   await expect(page.getByTestId("popup-today-time")).toBeVisible();
-  await expect(page.getByTestId("popup-open-options")).toBeVisible();
+  await expect(page.getByTestId("popup-open-settings")).toBeVisible();
+  await expect(page.getByTestId("popup-open-config")).toBeVisible();
   await expect(page.getByTestId("popup-open-dashboard")).toBeVisible();
   await expect(page.getByTestId("popup-open-plan")).toBeVisible();
   await expect(page.getByTestId("popup-plan-mode-toggle")).toBeVisible();
@@ -124,9 +126,7 @@ test("plan mode admits only the explicitly started video", async ({
 
   await planPage.goto("https://www.bilibili.com/");
   await expect(planPage).toHaveURL(/chrome-extension:\/\/[^/]+\/plan\.html$/);
-  await expect(
-    planPage.getByRole("heading", { name: "先决定看什么，再打开 Bilibili" })
-  ).toBeVisible();
+  await expect(planPage.getByRole("heading", { name: "计划", exact: true })).toBeVisible();
 });
 
 test("options persist a section change through extension storage", async ({

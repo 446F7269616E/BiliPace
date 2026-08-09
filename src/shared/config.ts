@@ -1,5 +1,4 @@
 import {
-  type BlockingSchedule,
   CONTENT_FILTER_IDS,
   type ContentFilterId,
   type ContentFilterSettings,
@@ -9,8 +8,13 @@ import {
   type SectionId,
   type SectionRule,
   type TemporaryAccessSettings,
+  type TimeAccessRule,
+  type TimeAccessEffect,
   type Weekday
 } from "./types";
+
+export const SETTINGS_SCHEMA_VERSION = 2 as const;
+export const MAX_TIME_ACCESS_RULES = 64;
 
 const DEFAULT_BLOCKED_SECTIONS: ReadonlySet<SectionId> = new Set(["home", "dynamic", "popular"]);
 
@@ -33,7 +37,7 @@ function defaultRule(section: SectionId): SectionRule {
 }
 
 export const DEFAULT_SETTINGS: Readonly<FocusSettings> = Object.freeze({
-  schemaVersion: 1,
+  schemaVersion: SETTINGS_SCHEMA_VERSION,
   enabled: true,
   sectionRules: Object.freeze(
     Object.fromEntries(
@@ -68,7 +72,7 @@ export function mergeSettings(
   const merged: FocusSettings = {
     ...base,
     ...patch,
-    schemaVersion: 1,
+    schemaVersion: SETTINGS_SCHEMA_VERSION,
     enabled: patch.enabled ?? base.enabled,
     sectionRules: { ...base.sectionRules },
     temporaryAccess: {
@@ -103,10 +107,11 @@ export function mergeSettings(
           ? base.sectionRules[section].dailyLimitMinutes
           : rulePatch.dailyLimitMinutes,
       schedules: rulePatch?.schedules
-        ? rulePatch.schedules.map((schedule) => ({
+        ? rulePatch.schedules.slice(0, MAX_TIME_ACCESS_RULES).map((schedule) => ({
             id: schedule.id ?? createId(),
-            name: schedule.name ?? "专注计划",
+            name: schedule.name ?? "时间规则",
             enabled: schedule.enabled ?? true,
+            effect: schedule.effect ?? "block",
             days: schedule.days ?? [],
             startTime: schedule.startTime ?? "09:00",
             endTime: schedule.endTime ?? "18:00"
@@ -120,7 +125,7 @@ export function mergeSettings(
 
 /**
  * Treats persisted data as untrusted and returns a complete, bounded settings object.
- * This doubles as the schema-v1 migration boundary for future versions.
+ * This is the schema migration boundary for stored settings.
  */
 export function normalizeSettings(value: unknown): FocusSettings {
   const defaults = createUnsafeDefaultSettings();
@@ -138,7 +143,7 @@ export function normalizeSettings(value: unknown): FocusSettings {
           : defaults.sectionRules[section].enabled,
       dailyLimitMinutes: normalizeDailyLimit(rawRule.dailyLimitMinutes),
       schedules: Array.isArray(rawRule.schedules)
-        ? rawRule.schedules.map(normalizeSchedule).filter(isDefined)
+        ? rawRule.schedules.slice(0, MAX_TIME_ACCESS_RULES).map(normalizeSchedule).filter(isDefined)
         : []
     };
   }
@@ -160,7 +165,7 @@ export function normalizeSettings(value: unknown): FocusSettings {
   const contentFilters = normalizeContentFilters(value.contentFilters, defaults.contentFilters);
 
   return {
-    schemaVersion: 1,
+    schemaVersion: SETTINGS_SCHEMA_VERSION,
     enabled: typeof value.enabled === "boolean" ? value.enabled : defaults.enabled,
     sectionRules,
     temporaryAccess,
@@ -203,7 +208,7 @@ function normalizeFilterTerms(value: unknown): string[] {
   return [...new Set(normalized)].slice(0, 50);
 }
 
-function normalizeSchedule(value: unknown): BlockingSchedule | undefined {
+function normalizeSchedule(value: unknown): TimeAccessRule | undefined {
   if (!isRecord(value)) return undefined;
   const startTime = normalizeTime(value.startTime);
   const endTime = normalizeTime(value.endTime);
@@ -215,8 +220,11 @@ function normalizeSchedule(value: unknown): BlockingSchedule | undefined {
 
   return {
     id: typeof value.id === "string" && value.id.trim() ? value.id : createId(),
-    name: typeof value.name === "string" ? value.name.trim().slice(0, 60) : "专注计划",
+    name: typeof value.name === "string" ? value.name.trim().slice(0, 60) : "时间规则",
     enabled: typeof value.enabled === "boolean" ? value.enabled : true,
+    // schema v1 schedules were block-only. A missing effect is migrated without
+    // changing the user's existing access windows.
+    effect: isTimeAccessEffect(value.effect) ? value.effect : "block",
     days: uniqueDays,
     startTime,
     endTime
@@ -250,7 +258,7 @@ function cloneSettings(settings: Readonly<FocusSettings>): FocusSettings {
     };
   }
   return {
-    schemaVersion: 1,
+    schemaVersion: SETTINGS_SCHEMA_VERSION,
     enabled: settings.enabled,
     sectionRules,
     temporaryAccess: { ...settings.temporaryAccess },
@@ -271,7 +279,7 @@ function createUnsafeDefaultSettings(): FocusSettings {
   const sectionRules = {} as Record<SectionId, SectionRule>;
   for (const section of SECTION_IDS) sectionRules[section] = defaultRule(section);
   return {
-    schemaVersion: 1,
+    schemaVersion: SETTINGS_SCHEMA_VERSION,
     enabled: true,
     sectionRules,
     temporaryAccess: { enabled: true, durationMinutes: 5, maxUsesPerDay: 3 },
@@ -285,8 +293,12 @@ function createUnsafeDefaultSettings(): FocusSettings {
   };
 }
 
-function cloneSchedule(schedule: BlockingSchedule): BlockingSchedule {
+function cloneSchedule(schedule: TimeAccessRule): TimeAccessRule {
   return { ...schedule, days: [...schedule.days] };
+}
+
+function isTimeAccessEffect(value: unknown): value is TimeAccessEffect {
+  return value === "allow" || value === "block";
 }
 
 function normalizeDailyLimit(value: unknown): number | null {

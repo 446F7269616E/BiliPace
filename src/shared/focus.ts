@@ -114,12 +114,11 @@ export class FocusDecisionService {
       return scheduleDecision;
     }
 
+    if (scheduleDecision.explicit) return scheduleDecision;
+
     const dailyLimitMinutes = settings.sectionRules[section].dailyLimitMinutes;
     // With a quota configured, an empty schedule means "quota only". Without a
     // quota, the established empty-schedule behavior remains an all-day block.
-    const hasActiveScheduledBlock =
-      scheduleDecision.blocked && settings.sectionRules[section].schedules.length > 0;
-    if (hasActiveScheduledBlock) return scheduleDecision;
     if (dailyLimitMinutes === null) return scheduleDecision;
     const usage = await this.analytics.summarize("day", now);
     return usage.bySection[section] >= dailyLimitMinutes * 60

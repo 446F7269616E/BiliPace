@@ -24,10 +24,14 @@ export class ContentFilterController {
   private applicationSignature = "";
   private keywords: string[] = [];
   private patterns: RegExp[] = [];
+  private readonly environmentTarget: EventTarget;
 
   constructor(private readonly document: Document = window.document) {
+    this.environmentTarget = this.document.defaultView ?? this.document;
     this.document.addEventListener("keydown", this.handleSearchShortcut, true);
-    this.document.addEventListener("bewlyMounted", this.handleEnvironmentChange);
+    // Ave Mujica dispatches this event on `window`; a document listener never
+    // receives it because events do not propagate from Window down to Document.
+    this.environmentTarget.addEventListener("bewlyMounted", this.handleEnvironmentChange);
   }
 
   apply(settings: ContentFilterSettings, url: string): void {
@@ -55,7 +59,7 @@ export class ContentFilterController {
     this.removeStyles();
     this.clearFilteredCards();
     this.document.removeEventListener("keydown", this.handleSearchShortcut, true);
-    this.document.removeEventListener("bewlyMounted", this.handleEnvironmentChange);
+    this.environmentTarget.removeEventListener("bewlyMounted", this.handleEnvironmentChange);
   }
 
   private renderStyles(): void {

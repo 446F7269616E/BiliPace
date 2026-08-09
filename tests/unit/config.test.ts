@@ -10,7 +10,43 @@ describe("settings schema", () => {
     expect(second.sectionRules.home.enabled).toBe(true);
     expect(Object.keys(first.sectionRules)).toEqual([...SECTION_IDS]);
     expect(first.enabled).toBe(true);
+    expect(first.schemaVersion).toBe(2);
     expect(first.planMode).toEqual({ enabled: false, watchDurationMinutes: 45 });
+  });
+
+  it("migrates block-only schedules and keeps explicit access effects", () => {
+    const normalized = normalizeSettings({
+      schemaVersion: 1,
+      sectionRules: {
+        home: {
+          schedules: [
+            {
+              id: "legacy",
+              name: "旧时段",
+              enabled: true,
+              days: [1],
+              startTime: "09:00",
+              endTime: "10:00"
+            },
+            {
+              id: "allow",
+              name: "可用时段",
+              enabled: true,
+              effect: "allow",
+              days: [2],
+              startTime: "12:00",
+              endTime: "13:00"
+            }
+          ]
+        }
+      }
+    });
+
+    expect(normalized.schemaVersion).toBe(2);
+    expect(normalized.sectionRules.home.schedules.map((rule) => rule.effect)).toEqual([
+      "block",
+      "allow"
+    ]);
   });
 
   it("normalizes untrusted persisted values and bounds numeric settings", () => {

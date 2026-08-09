@@ -84,13 +84,12 @@ function renderLoading(period: UsagePeriod): void {
     period,
     element("section", {
       className: "card state-view",
-      attrs: { "aria-busy": "true", "aria-label": "正在加载使用洞察" },
+      attrs: { "aria-busy": "true", "aria-label": "正在加载仪表盘" },
       children: [
         element("div", {
           children: [
             element("div", { className: "state-view__icon", children: [icon("bar-chart")] }),
-            element("h2", { text: `正在整理${PERIOD_LABELS[period]}数据` }),
-            element("p", { text: "汇总各板块时长与每日趋势…" })
+            element("h2", { text: `正在加载${PERIOD_LABELS[period]}数据` })
           ]
         })
       ]
@@ -113,7 +112,7 @@ function renderError(period: UsagePeriod, message: string): void {
       element("div", {
         children: [
           element("div", { className: "state-view__icon", children: [icon("warning")] }),
-          element("h2", { text: "暂时看不到使用时间" }),
+          element("h2", { text: "使用时间加载失败" }),
           element("p", { text: `${message} 请重试。` }),
           retry
         ]
@@ -133,8 +132,8 @@ function renderDashboard(usage: UsageSummary, tracking: TrackingStatus): void {
           createTrendCard(usage),
           element("aside", {
             className: "dashboard-aside",
-            attrs: { "aria-label": "板块统计与洞察" },
-            children: [createSectionBreakdown(usage), createInsights(usage)]
+            attrs: { "aria-label": "板块统计" },
+            children: [createSectionBreakdown(usage)]
           })
         ]
       }),
@@ -153,13 +152,7 @@ function createShell(period: UsagePeriod, content: HTMLElement): HTMLElement {
         className: "dashboard-heading",
         children: [
           element("div", {
-            children: [
-              element("h1", { className: "page-title", text: "使用洞察" }),
-              element("p", {
-                className: "page-description",
-                text: "看见时间流向，温和地调整下一次选择。统计只保存在当前浏览器。"
-              })
-            ]
+            children: [element("h1", { className: "page-title", text: "仪表盘" })]
           }),
           createPeriodControl(period)
         ]
@@ -376,35 +369,6 @@ function createSectionBreakdown(usage: UsageSummary): HTMLElement {
   });
 }
 
-function createInsights(usage: UsageSummary): HTMLElement {
-  const insights = generateInsights(usage);
-  return element("section", {
-    className: "insights-card card",
-    attrs: { "aria-labelledby": "insights-title" },
-    children: [
-      element("h2", { text: "温和洞察", attrs: { id: "insights-title" } }),
-      element("p", { text: "根据这段时间的使用情况整理" }),
-      element("ul", {
-        className: "insight-list",
-        children: insights.map((insight) =>
-          element("li", {
-            className: "insight-item",
-            children: [
-              element("span", { className: "insight-item__icon", children: [icon(insight.icon)] }),
-              element("div", {
-                children: [
-                  element("strong", { text: insight.title }),
-                  element("p", { text: insight.copy })
-                ]
-              })
-            ]
-          })
-        )
-      })
-    ]
-  });
-}
-
 function createFooter(): HTMLElement {
   const clearButton = element("button", {
     className: "btn btn--danger",
@@ -476,58 +440,6 @@ function openClearDialog(): void {
   );
   document.body.append(backdrop);
   cancel.focus();
-}
-
-interface Insight {
-  icon: "clock" | "sparkles" | "calendar";
-  title: string;
-  copy: string;
-}
-
-function generateInsights(usage: UsageSummary): Insight[] {
-  if (usage.totalSeconds <= 0) {
-    return [
-      {
-        icon: "sparkles",
-        title: "从此刻开始就好",
-        copy: "当前范围还没有使用记录。打开 Bilibili 后，活跃时间会自动出现在这里。"
-      },
-      {
-        icon: "clock",
-        title: "只计有效使用",
-        copy: "后台标签页、失焦窗口和长时间无活动不会计入使用时长。"
-      }
-    ];
-  }
-
-  const topSection = getTopSection(usage);
-  const peakDay = [...usage.byDay].sort((a, b) => totalForDay(b) - totalForDay(a))[0];
-  const activeDays = usage.byDay.filter((day) => totalForDay(day) > 0).length;
-  const insights: Insight[] = [];
-
-  if (topSection) {
-    const share = Math.round((usage.bySection[topSection] / usage.totalSeconds) * 100);
-    insights.push({
-      icon: "sparkles",
-      title: `${SECTION_LABELS[topSection]}占比最高`,
-      copy: `${PERIOD_LABELS[usage.period]}有 ${share}% 的时间用于${SECTION_LABELS[topSection]}，可优先从这个板块调整规则。`
-    });
-  }
-  if (peakDay) {
-    insights.push({
-      icon: "clock",
-      title: usage.period === "day" ? "今日使用节奏" : `${formatShortDate(peakDay.date)}用时最多`,
-      copy: `${formatDuration(totalForDay(peakDay), true)}，约占当前范围总时长的 ${Math.round((totalForDay(peakDay) / usage.totalSeconds) * 100)}%。`
-    });
-  }
-  if (usage.period !== "day") {
-    insights.push({
-      icon: "calendar",
-      title: `${activeDays} 天有使用记录`,
-      copy: `当前范围共 ${usage.byDay.length} 天。稳定的小幅调整，通常比一次性完全戒断更容易坚持。`
-    });
-  }
-  return insights;
 }
 
 function getTopSection(usage: UsageSummary): SectionId | null {

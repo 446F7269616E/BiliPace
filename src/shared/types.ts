@@ -26,10 +26,15 @@ export type Weekday = 0 | 1 | 2 | 3 | 4 | 5 | 6;
 /** 24-hour local time in HH:mm format. */
 export type TimeOfDay = string;
 
-export interface BlockingSchedule {
+export const TIME_ACCESS_EFFECTS = ["allow", "block"] as const;
+export type TimeAccessEffect = (typeof TIME_ACCESS_EFFECTS)[number];
+
+export interface TimeAccessRule {
   id: string;
   name: string;
   enabled: boolean;
+  /** A matching allow rule is an explicit exception to matching block rules. */
+  effect: TimeAccessEffect;
   days: Weekday[];
   startTime: TimeOfDay;
   endTime: TimeOfDay;
@@ -40,7 +45,7 @@ export interface SectionRule {
   /** null disables the quota; otherwise block after this many minutes today. */
   dailyLimitMinutes: number | null;
   /** No schedules means all-day block, or quota-only when a daily limit is set. */
-  schedules: BlockingSchedule[];
+  schedules: TimeAccessRule[];
 }
 
 export interface TemporaryAccessSettings {
@@ -83,7 +88,7 @@ export interface ContentFilterSettings {
 }
 
 export interface FocusSettings {
-  schemaVersion: 1;
+  schemaVersion: 2;
   enabled: boolean;
   sectionRules: Record<SectionId, SectionRule>;
   temporaryAccess: TemporaryAccessSettings;
