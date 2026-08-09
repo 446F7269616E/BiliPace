@@ -1,8 +1,17 @@
-# BiliFocus（哔哩专注）
+# BiliPace（哔哩节拍）
 
 一个本地优先、开源、跨浏览器的 Bilibili 专注扩展。你可以分别控制首页、动态、热门、视频、直播、番剧影视和搜索页面，在指定星期与时段屏蔽容易分心的板块，并通过日 / 周 / 月仪表盘了解时间去向。
 
-> BiliFocus 是非官方项目，与哔哩哔哩、Google、Mozilla 或 Apple 无隶属、认可或合作关系。
+> BiliPace 是非官方项目，与哔哩哔哩、Google、Mozilla 或 Apple 无隶属、认可或合作关系。
+
+## 最快启用（Chrome / Edge）
+
+1. 从 [GitHub Releases](https://github.com/446F7269616E/BiliPace/releases/latest) 下载 `bilipace-*-chromium.zip` 并解压；
+2. 打开 `chrome://extensions`（Edge 使用 `edge://extensions`）；
+3. 打开右上角“开发者模式”，点击“加载已解压的扩展程序”，选择解压后的文件夹；
+4. 在浏览器扩展菜单中固定 **BiliPace** 图标，然后点击图标即可启用或暂停“专注保护”。
+
+计划模式默认关闭。要开启它，点击工具栏里的 **BiliPace → 计划模式未开启** 开关；也可以点击“管理观看清单”，在计划页顶部开启。
 
 ## 功能
 
@@ -17,7 +26,7 @@
 - 所有设置、观看清单与聚合统计只存于浏览器本地，无遥测、广告和云端传输；
 - 同一源码构建 Chromium、Firefox 和 Safari Web Extension 产物。
 
-## 安装
+## 从源码安装
 
 ### Chrome / Edge / 其他 Chromium 浏览器
 
@@ -50,8 +59,8 @@ npm run build:firefox
 npm ci
 npm run build:safari
 xcrun safari-web-extension-packager dist/safari \
-  --app-name BiliFocus \
-  --bundle-identifier com.example.BiliFocus \
+  --app-name BiliPace \
+  --bundle-identifier io.github.bilipace.BiliPace \
   --swift
 ```
 
@@ -59,9 +68,9 @@ xcrun safari-web-extension-packager dist/safari \
 
 ## 使用
 
-安装后点击工具栏中的 BiliFocus 图标：
+安装后点击工具栏中的 BiliPace 图标：
 
-1. 用总开关开始或暂停专注；
+1. 用“专注保护”总开关开始或暂停普通板块规则；
 2. 在“专注设置”中选择要管理的板块、每日额度和详细计划；
 3. 在“观看计划”中按需开启计划模式，添加视频并调整顺序；只有点击“开始观看”的对应视频会在设定窗口内放行；
 4. 被普通板块规则拦截时可返回，或在允许次数内临时访问；
@@ -71,7 +80,7 @@ xcrun safari-web-extension-packager dist/safari \
 
 ## 隐私与权限
 
-BiliFocus 申请：
+BiliPace 申请：
 
 - `storage`：保存本地设置、临时放行和按日期 / 板块聚合的秒数；
 - `idle`：设备处于空闲或锁定状态时停止计时；
@@ -111,4 +120,4 @@ npm run test:e2e
 
 ## 许可证
 
-[MIT](./LICENSE) © 2026 BiliFocus contributors
+[MIT](./LICENSE) © 2026 BiliPace contributors

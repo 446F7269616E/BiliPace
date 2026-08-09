@@ -157,12 +157,12 @@ function createShell(period: UsagePeriod, content: HTMLElement): HTMLElement {
 function createBrand(): HTMLElement {
   return element("a", {
     className: "brand",
-    attrs: { href: "dashboard.html", "aria-label": "BiliFocus 哔哩专注使用洞察" },
+    attrs: { href: "dashboard.html", "aria-label": "BiliPace 哔哩节拍使用洞察" },
     children: [
       element("span", { className: "brand__mark", children: [icon("focus")] }),
       element("span", {
         className: "brand__meta",
-        children: [element("span", { text: "BiliFocus" }), element("small", { text: "使用洞察" })]
+        children: [element("span", { text: "BiliPace" }), element("small", { text: "使用洞察" })]
       })
     ]
   });
@@ -408,7 +408,7 @@ function createFooter(): HTMLElement {
   return element("footer", {
     className: "dashboard-footer",
     children: [
-      element("p", { text: "BiliFocus 仅保存日期、板块与时长，不记录视频、搜索词或账号信息。" }),
+      element("p", { text: "BiliPace 仅保存日期、板块与时长，不记录视频、搜索词或账号信息。" }),
       clearButton
     ]
   });

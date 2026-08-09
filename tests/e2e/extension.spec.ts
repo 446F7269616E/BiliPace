@@ -49,10 +49,10 @@ test("packaged manifest stays inside the reviewed permission budget", () => {
 });
 
 for (const [fileName, title] of [
-  ["popup.html", "BiliFocus"],
-  ["options.html", "设置 · BiliFocus"],
-  ["dashboard.html", "使用洞察 · BiliFocus"],
-  ["plan.html", "观看计划 · BiliFocus"]
+  ["popup.html", "BiliPace"],
+  ["options.html", "设置 · BiliPace"],
+  ["dashboard.html", "使用洞察 · BiliPace"],
+  ["plan.html", "观看计划 · BiliPace"]
 ] as const) {
   test(`${fileName} loads as a real MV3 extension page`, async ({ openExtensionPage }) => {
     const page = await openExtensionPage(fileName);
@@ -91,6 +91,8 @@ test("popup exposes the primary focus actions and receives a background response
   await expect(page.getByTestId("popup-open-options")).toBeVisible();
   await expect(page.getByTestId("popup-open-dashboard")).toBeVisible();
   await expect(page.getByTestId("popup-open-plan")).toBeVisible();
+  await expect(page.getByTestId("popup-plan-mode-toggle")).toBeVisible();
+  await expect(page.getByTestId("popup-manage-plan")).toBeVisible();
 });
 
 test("plan mode admits only the explicitly started video", async ({

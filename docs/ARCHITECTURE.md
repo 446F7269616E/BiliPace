@@ -1,8 +1,8 @@
-# BiliFocus 架构与质量约束
+# BiliPace 架构与质量约束
 
 ## 目标
 
-BiliFocus 是本地优先、跨浏览器的 WebExtension。架构优先保证：准确计时、确定性计划、最小权限、可迁移数据和 Bilibili 页面变化下的可恢复性。
+BiliPace 是本地优先、跨浏览器的 WebExtension。架构优先保证：准确计时、确定性计划、最小权限、可迁移数据和 Bilibili 页面变化下的可恢复性。
 
 ## 分层与依赖方向
 
@@ -66,6 +66,8 @@ content script 发出 `SESSION_START`、`HEARTBEAT`、`ROUTE_CHANGE`、`SESSION_
 ## 数据契约
 
 首发逻辑键（以核心模块 `STORAGE_KEYS` 为唯一代码来源）：
+
+> `bilifocus.*` 是为已有安装保留的兼容命名空间。品牌重命名后不得直接更换这些键；未来迁移必须双读并经过版本化验证。
 
 - `bilifocus.settings.v1`
 - `bilifocus.usage.v1`

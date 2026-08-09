@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "BiliFocus - 哔哩专注",
-  "short_name": "BiliFocus",
-  "version": "0.1.0",
+  "name": "BiliPace - 哔哩节拍",
+  "short_name": "BiliPace",
+  "version": "0.2.0",
   "description": "按页面与时间计划减少 Bilibili 分心，并在本地查看使用时间。",
   "permissions": ["storage"],
   "host_permissions": [
@@ -15,7 +15,7 @@
     "scripts": ["background.js"]
   },
   "action": {
-    "default_title": "BiliFocus",
+    "default_title": "BiliPace",
     "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon-16.png",

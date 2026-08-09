@@ -1,6 +1,6 @@
-# Contributing to BiliFocus
+# Contributing to BiliPace
 
-感谢你帮助改进 BiliFocus。请先搜索已有 issue；较大的功能、权限或数据模型变更应先创建提案，避免在产品边界未达成共识前投入大量实现。
+感谢你帮助改进 BiliPace。请先搜索已有 issue；较大的功能、权限或数据模型变更应先创建提案，避免在产品边界未达成共识前投入大量实现。
 
 参与即表示你同意遵守 [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md)。安全问题不要公开提交，请使用 [SECURITY.md](./SECURITY.md) 的私密渠道。
 

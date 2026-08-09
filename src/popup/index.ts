@@ -54,6 +54,7 @@ function renderLoading(): void {
     createHeader(),
     element("div", { className: "today-card card skeleton", text: "正在加载今日使用时间" }),
     element("div", { className: "focus-control card skeleton", text: "正在加载专注状态" }),
+    element("div", { className: "plan-control card skeleton", text: "正在加载计划模式" }),
     element("div", { className: "page-policy card skeleton", text: "正在加载当前页面策略" })
   );
   app.replaceChildren(shell);
@@ -143,26 +144,97 @@ function renderPopup(data: PopupData): void {
     createHeader(),
     createTodayCard(data.usage),
     focusControl,
+    createPlanModeControl(data),
     createPagePolicy(data),
     createActions(),
     element("p", {
       className: "popup-footer",
-      text: "数据仅保存在你的浏览器中 · BiliFocus 非哔哩哔哩官方产品"
+      text: "数据仅保存在你的浏览器中 · BiliPace 非哔哩哔哩官方产品"
     })
   );
   app.replaceChildren(shell);
+}
+
+function createPlanModeControl(data: PopupData): HTMLElement {
+  const active = data.settings.planMode.enabled;
+  const planToggle = createToggle("计划模式", active, "popup-plan-mode-toggle");
+  const manageLink = element("a", {
+    className: "plan-control__link",
+    attrs: {
+      href: "plan.html",
+      target: "_blank",
+      rel: "noreferrer",
+      "data-testid": "popup-manage-plan"
+    },
+    children: ["管理观看清单", icon("arrow")]
+  });
+
+  planToggle.input.addEventListener("change", () => {
+    void updatePlanMode();
+  });
+
+  async function updatePlanMode(): Promise<void> {
+    const enabled = planToggle.input.checked;
+    planToggle.input.disabled = true;
+    try {
+      const planState = await sendRequest({ type: "SET_PLAN_MODE", enabled });
+      toast(enabled ? "计划模式已开启，访问 Bilibili 会先查看清单" : "计划模式已暂停");
+      renderPopup({
+        ...data,
+        settings: { ...data.settings, planMode: planState.settings }
+      });
+    } catch (error) {
+      planToggle.input.checked = !enabled;
+      planToggle.input.disabled = false;
+      toast(describeError(error), "error");
+    }
+  }
+
+  return element("section", {
+    className: "plan-control card",
+    dataset: { active: String(active) },
+    attrs: { "aria-label": "计划模式快速开关" },
+    children: [
+      element("div", {
+        className: "plan-control__row",
+        children: [
+          element("div", {
+            className: "plan-control__title",
+            children: [
+              element("span", {
+                className: "plan-control__icon",
+                children: [icon("calendar")]
+              }),
+              element("span", {
+                children: [
+                  element("strong", { text: active ? "计划模式已开启" : "计划模式未开启" }),
+                  element("small", {
+                    text: active
+                      ? "打开 Bilibili 前先进入观看计划"
+                      : "开启后，只观看清单中主动开始的视频"
+                  })
+                ]
+              })
+            ]
+          }),
+          planToggle.label
+        ]
+      }),
+      manageLink
+    ]
+  });
 }
 
 function createHeader(): HTMLElement {
   const logo = element("span", { className: "brand__mark", children: [icon("focus")] });
   const brand = element("div", {
     className: "brand",
-    attrs: { "aria-label": "BiliFocus 哔哩专注" },
+    attrs: { "aria-label": "BiliPace 哔哩节拍" },
     children: [
       logo,
       element("span", {
         className: "brand__meta",
-        children: [element("span", { text: "BiliFocus" }), element("small", { text: "哔哩专注" })]
+        children: [element("span", { text: "BiliPace" }), element("small", { text: "哔哩节拍" })]
       })
     ]
   });

@@ -126,13 +126,13 @@ function createShell(content: HTMLElement): HTMLElement {
         children: [
           element("a", {
             className: "brand",
-            attrs: { href: "plan.html", "aria-label": "BiliFocus 哔哩专注观看计划" },
+            attrs: { href: "plan.html", "aria-label": "BiliPace 哔哩节拍观看计划" },
             children: [
               element("span", { className: "brand__mark", children: [icon("focus")] }),
               element("span", {
                 className: "brand__meta",
                 children: [
-                  element("span", { text: "BiliFocus" }),
+                  element("span", { text: "BiliPace" }),
                   element("small", { text: "观看计划" })
                 ]
               })
@@ -923,7 +923,7 @@ function createImportCard(): HTMLElement {
         children: [
           icon("shield"),
           element("span", {
-            text: "BiliFocus 不会要求或保存 Bilibili 密码。未来官方接入也必须通过明确授权，且不会把应用密钥打包进扩展。"
+            text: "BiliPace 不会要求或保存 Bilibili 密码。未来官方接入也必须通过明确授权，且不会把应用密钥打包进扩展。"
           })
         ]
       })
@@ -1212,7 +1212,7 @@ function createFooter(): HTMLElement {
   return element("footer", {
     className: "plan-footer",
     children: [
-      element("span", { text: "BiliFocus 非哔哩哔哩官方产品" }),
+      element("span", { text: "BiliPace 非哔哩哔哩官方产品" }),
       element("span", { text: "计划与标题仅保存在当前浏览器" })
     ]
   });

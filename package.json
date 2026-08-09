@@ -1,6 +1,6 @@
 {
-  "name": "bilifocus",
-  "version": "0.1.0",
+  "name": "bilipace",
+  "version": "0.2.0",
   "description": "A privacy-first, cross-browser focus and time insights extension for Bilibili.",
   "license": "MIT",
   "keywords": [
@@ -12,11 +12,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/446F7269616E/BiliFocus.git"
+    "url": "git+https://github.com/446F7269616E/BiliPace.git"
   },
-  "homepage": "https://github.com/446F7269616E/BiliFocus#readme",
+  "homepage": "https://github.com/446F7269616E/BiliPace#readme",
   "bugs": {
-    "url": "https://github.com/446F7269616E/BiliFocus/issues"
+    "url": "https://github.com/446F7269616E/BiliPace/issues"
   },
   "type": "module",
   "private": true,

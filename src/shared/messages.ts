@@ -112,7 +112,7 @@ export async function sendRequest<K extends MessageType>(
     payload
   } satisfies WireRequest);
   if (!response || response.version !== 1 || response.requestId !== requestId) {
-    throw new Error("BiliFocus background returned an invalid response");
+    throw new Error("BiliPace background returned an invalid response");
   }
   if (!response.result.ok) throw new Error(response.result.error.message);
   return response.result.data;

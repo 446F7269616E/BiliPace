@@ -151,7 +151,7 @@ async function evaluatePage(): Promise<void> {
     }
   } catch (error) {
     // A missing/restarting background context must never break Bilibili itself.
-    console.debug("BiliFocus page check unavailable", error);
+    console.debug("BiliPace page check unavailable", error);
   }
 }
 
@@ -175,7 +175,7 @@ function renderBlockPage(decision: PageDecision, url: string): void {
 
   const mark = element("div", "mark", "B");
   mark.setAttribute("aria-hidden", "true");
-  const eyebrow = element("p", "eyebrow", "BiliFocus · 专注模式");
+  const eyebrow = element("p", "eyebrow", "BiliPace · 专注模式");
   const heading = element("h1", "", "先把注意力留给重要的事");
   heading.id = "bilifocus-title";
 
@@ -205,7 +205,7 @@ function renderBlockPage(decision: PageDecision, url: string): void {
 
   const hintText = decision.canRequestTemporaryAccess
     ? `今天还可临时访问 ${decision.temporaryAccessUsesRemaining} 次。时长由你在设置中决定。`
-    : "你可以在 BiliFocus 设置中调整板块、计划和每日额度。";
+    : "你可以在 BiliPace 设置中调整板块、计划和每日额度。";
   const hint = element("p", "hint", hintText);
   const status = element("div", "status");
   status.setAttribute("role", "status");

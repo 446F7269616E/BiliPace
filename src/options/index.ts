@@ -177,12 +177,12 @@ function createTopbar(): HTMLElement {
 function createBrand(): HTMLElement {
   return element("a", {
     className: "brand",
-    attrs: { href: "options.html", "aria-label": "BiliFocus 哔哩专注设置" },
+    attrs: { href: "options.html", "aria-label": "BiliPace 哔哩节拍设置" },
     children: [
       element("span", { className: "brand__mark", children: [icon("focus")] }),
       element("span", {
         className: "brand__meta",
-        children: [element("span", { text: "BiliFocus" }), element("small", { text: "非官方扩展" })]
+        children: [element("span", { text: "BiliPace" }), element("small", { text: "非官方扩展" })]
       })
     ]
   });
@@ -654,7 +654,7 @@ function createPrivacyArea(): HTMLElement {
       createSectionHeading(
         "privacy-title",
         "数据与隐私",
-        "BiliFocus 不需要账户，也不会把浏览记录发送到远端。"
+        "BiliPace 不需要账户，也不会把浏览记录发送到远端。"
       ),
       element("div", {
         className: "privacy-card card",

@@ -1,8 +1,16 @@
 # Changelog
 
-All notable changes to BiliFocus will be documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and releases follow [Semantic Versioning](https://semver.org/).
+All notable changes to BiliPace will be documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and releases follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+
+## [0.2.0] - 2026-08-09
+
+### Changed
+
+- Renamed the extension from BiliFocus to BiliPace（哔哩节拍）while retaining legacy storage keys and the Firefox extension ID for upgrade compatibility.
+- Added a prominent plan-mode switch and watch-list entry directly to the toolbar popup.
+- Added release-first installation and plan-mode activation instructions.
 
 ### Added
 

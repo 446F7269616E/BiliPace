@@ -43,7 +43,7 @@ if (api) {
           ok: false,
           error: {
             code: "REQUEST_FAILED",
-            message: error instanceof Error ? error.message : "Unknown BiliFocus error"
+            message: error instanceof Error ? error.message : "Unknown BiliPace error"
           }
         }
       };
@@ -51,7 +51,7 @@ if (api) {
   });
 
   void tracker.start().catch((error: unknown) => {
-    console.warn("BiliFocus usage tracking could not start", error);
+    console.warn("BiliPace usage tracking could not start", error);
   });
 }
 
