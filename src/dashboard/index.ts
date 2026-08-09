@@ -444,7 +444,7 @@ function createScopeRow(label: string, value: string): HTMLElement {
 }
 
 function moduleDisplayName(moduleId: string): string {
-  return moduleId === "hourleaf.site.bilibili" ? "哔哩哔哩 · Ave Mujica" : moduleId;
+  return moduleId === "hourleaf.site.bilibili" ? "哔哩哔哩" : moduleId;
 }
 
 function createFooter(): HTMLElement {

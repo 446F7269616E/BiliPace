@@ -11,21 +11,20 @@ Hourleaf 是一款本地优先、开源、跨浏览器的网站专注扩展。�
 - 通过计划清单安排要访问的页面，支持列表和可拖拽的思维导图视图；
 - 在仪表盘查看今天、本周和本月的使用分布；
 - 所有设置、计划和聚合统计默认只保存在浏览器本地；
-- Bilibili 与 BewlyBewly! Ave Mujica 适配作为可选站点模块提供；
+- 内置 Bilibili 站点模块，可随时启用、停用、删除或恢复；
 - 使用同一套界面和数据契约构建 Chromium、Firefox 与 Safari 版本。
 
-## 核心与站点模块
+## 内置站点模块
 
-Hourleaf 核心只包含通用计时、时间规则、计划、统计和界面，不包含特定网站的 DOM 选择器或账号接口。站点模块可增加板块识别和内容降噪，但不能读取 Cookie、密码或任意扩展存储。
+Hourleaf 始终只安装一个扩展。通用计时、时间规则、计划、统计和界面与站点模块保持独立代码边界，所有经过审核的模块随同一个签名包预装，不从网络下载或执行代码。
 
-首个模块是 `hourleaf.site.bilibili`，覆盖 Bilibili 原生界面与 BewlyBewly! Ave Mujica 的基础兼容。它提供板块统计、站内内容降噪和视频计划身份识别。未启用模块时，Bilibili 与其他网站一样使用通用整站规则。
+Bilibili 模块提供板块统计、站内内容降噪和视频计划身份识别。模块初始不启用，也不会自动申请网站权限。删除模块会注销它的本地代码块并清理模块规则；后续页面不再加载该代码，用户也可以从内置模块列表恢复。未启用模块时，Bilibili 与其他网站一样使用通用整站规则。
 
-浏览器商店版本不会从 GitHub 下载普通 JavaScript 或 WebAssembly 后执行。发布包采用两种经过审核的构建：
+### 兼容性
 
-- `hourleaf-<version>-<browser>.zip`：轻量核心；
-- `hourleaf-bilibili-<version>-<browser>.zip`：包含已审核 Bilibili 模块的完整构建，模块仍需用户主动启用并授权站点。
+Bilibili 模块对 BewlyBewly! Ave Mujica 提供基础兼容；兼容层失效时会停止增强，不影响页面正常使用。
 
-设置页中的“获取”只会打开对应的正式商店或 GitHub Release 页面，不会静默安装代码。GitHub ZIP 是源码/开发者侧载产物；Chrome、Firefox 与 Safari 的正式安装仍分别以 Chrome Web Store、AMO 签名和 App Store 签名版本为准。
+每个平台只生成一个 `hourleaf-<version>-<browser>.zip`。GitHub ZIP 是源码/开发者侧载产物；Chrome、Firefox 与 Safari 的正式安装仍分别以 Chrome Web Store、AMO 签名和 App Store 签名版本为准。
 
 ## 从源码运行
 
@@ -39,9 +38,8 @@ npm run package
 
 构建目录：
 
-- `dist/chromium`、`dist/firefox`、`dist/safari`：核心版；
-- `dist/bundles/bilibili/<browser>`：含 Bilibili 模块的构建；
-- `dist/modules/bilibili`：站点模块描述、校验信息与开发包。
+- `dist/chromium`、`dist/firefox`、`dist/safari`：完整扩展；
+- 每个平台目录中的 `modules/`：只在对应模块启用时注册的本地代码块。
 
 Chromium 可在 `chrome://extensions` 打开开发者模式后加载 `dist/chromium`。Firefox 可在 `about:debugging#/runtime/this-firefox` 临时载入 `dist/firefox/manifest.json`。
 

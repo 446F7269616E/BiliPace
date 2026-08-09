@@ -34,16 +34,8 @@ for (const target of ["chromium", "firefox", "safari"]) {
     path.join(root, "dist", target),
     `${packageName}-${version}-${target}.zip`
   );
-  await archiveDirectory(
-    path.join(root, "dist", "bundles", "bilibili", target),
-    `${packageName}-bilibili-${version}-${target}.zip`
-  );
 }
 
-await archiveDirectory(
-  path.join(root, "dist", "modules", "bilibili"),
-  `${packageName}-site-module-bilibili-1.0.0.zip`
-);
 await writeFile(path.join(releaseDir, "SHA256SUMS"), `${checksums.join("\n")}\n`, "utf8");
 
 /** @param {string} sourceDir @param {string} filename */

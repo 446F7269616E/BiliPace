@@ -9,8 +9,6 @@ import type {
   PlanNavigationDecision,
   PlanState,
   ManagedSite,
-  SiteModuleManifest,
-  SiteModuleSource,
   SiteModuleStore,
   SiteTargetSettings,
   TargetId,
@@ -61,10 +59,7 @@ export interface MessageContract {
     response: { removed: true; permissionRemoved: boolean };
   };
   GET_SITE_MODULES: { request: Record<never, unknown>; response: SiteModuleStore };
-  INSTALL_SITE_MODULE: {
-    request: { manifest: SiteModuleManifest; source: SiteModuleSource };
-    response: SiteModuleStore;
-  };
+  RESTORE_SITE_MODULE: { request: { moduleId: string }; response: SiteModuleStore };
   SET_SITE_MODULE_ENABLED: {
     request: { moduleId: string; enabled: boolean };
     response: SiteModuleStore;
@@ -262,18 +257,9 @@ export function parseMessageRequest(
       if (!isOpaqueId(payload.siteId)) return null;
       request = { type: value.type, siteId: payload.siteId };
       break;
-    case "INSTALL_SITE_MODULE":
-      if (
-        !isRecord(payload.manifest) ||
-        (payload.source !== "bundled" && payload.source !== "store") ||
-        !isBoundedJson(payload.manifest)
-      )
-        return null;
-      request = {
-        type: value.type,
-        manifest: payload.manifest as unknown as SiteModuleManifest,
-        source: payload.source
-      };
+    case "RESTORE_SITE_MODULE":
+      if (!isOpaqueId(payload.moduleId)) return null;
+      request = { type: value.type, moduleId: payload.moduleId };
       break;
     case "SET_SITE_MODULE_ENABLED":
       if (!isOpaqueId(payload.moduleId) || typeof payload.enabled !== "boolean") return null;

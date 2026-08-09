@@ -44,8 +44,8 @@ test("settings exposes website and module management", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "网站" })).toBeVisible();
   await expect(page.getByTestId("site-add-input")).toBeVisible();
   await expect(page.getByRole("heading", { name: "模块" })).toBeVisible();
-  await expect(page.getByTestId("bilibili-module-action")).toHaveText("获取");
-  await expect(page.getByText("Ave Mujica", { exact: false })).toBeVisible();
+  await expect(page.getByTestId("bilibili-module-action")).toHaveText("启用");
+  await expect(page.getByTestId("bilibili-module-remove")).toBeVisible();
 });
 
 test("dashboard exposes day, week and month without color-only data", async ({ page }) => {

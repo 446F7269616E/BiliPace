@@ -58,7 +58,7 @@ export interface SiteModuleDescriptor {
   lifecycle: readonly ModuleLifecycleDescriptor[];
   distribution: {
     artifactName: string;
-    /** Executable code is reviewed and packaged separately; it is never fetched by this runtime. */
+    /** Executable code is reviewed and emitted as a local chunk; it is never fetched remotely. */
     execution: "bundled-reviewed";
   };
 }

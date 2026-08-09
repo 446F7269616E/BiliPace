@@ -51,19 +51,20 @@ popup / dashboard / plan / options / home
 - 明确的生命周期事件和安全回退页面；
 - 可选的计划身份适配。
 
-运行时注册表只接受随构建一起审核的本地模块，不下载、`eval`、动态 `import` 或解释远程 JavaScript/Wasm。远程目录若存在，只能提供版本、下载页、权限和校验值等元数据；不能改变执行逻辑。
+运行时注册表只接受随构建一起审核的本地模块，不下载、`eval`、远程 `import` 或解释远程 JavaScript/Wasm。
 
 发布形态：
 
-- 核心构建不导入任何站点模块；
-- 模块构建通过单独 entry 注册站点模块后加载同一内容宿主；
-- 商店可发布核心版或包含已审核模块但默认停用的 bundle；
-- 设置页只能打开正常的商店/Release 获取页，不能静默安装扩展；
-- GitHub 开发包不能冒充 Windows/macOS 的普通 CRX 安装流程。
+- 每个平台只发布一个 Hourleaf 扩展，不要求用户安装第二个扩展；
+- 所有经过审核的模块随签名包预装，默认停用且不持有网站权限；
+- 通用 `content.js` 与 `modules/<site>.js` 分开构建，模块代码块仅在启用且已授权的来源注册；
+- 删除模块会注销代码块、删除模块目标并写入 tombstone，后续页面不再加载它；
+- 签名扩展不能在运行时物理删除包内文件，页面关闭或刷新后已注销模块不再占用运行内存；
+- 恢复模块只恢复包内已审核代码的本地状态，不访问网络。
 
 ### Bilibili 模块
 
-`hourleaf.site.bilibili` 包含 Bilibili 与 BewlyBewly! Ave Mujica 的路由、板块和 DOM 适配。Ave 只处理开放 `#bewly` ShadowRoot 的稳定入口，选择器失效时安全放行，不扫描 iframe，不启用 `all_frames`。模块不读取 Cookie、账号、私信、评论正文或完整观看历史。
+`hourleaf.site.bilibili` 包含 Bilibili 路由、板块、DOM 适配和开放 ShadowRoot 的安全兼容层。选择器失效时安全放行，不扫描 iframe，不启用 `all_frames`。模块不读取 Cookie、账号、私信、评论正文或完整观看历史。
 
 ## 计时模型
 
@@ -103,6 +104,7 @@ content script 发出 `start / heartbeat / route / stop`。后台按会话 ID �
 - `bilifocus.temporary-access.v1`：当前值 schema v2；
 - `bilifocus.plan-queue.v1`；
 - `bilifocus.plan-access.v1`。
+- `hourleaf.modules.v1`：schema v2，保存预装模块状态与用户删除 tombstone。
 
 v1/v2 的 Bilibili 板块、计划和内容降噪设置在读取时迁移为兼容 capsule，只有安装 Bilibili 模块时才映射到新目标。迁移必须幂等、有界并保留无法识别的数据；损坏值回退到安全默认值。计划视图偏好使用 `hourleaf.plan.view`，仅允许 `list | mindmap`。
 

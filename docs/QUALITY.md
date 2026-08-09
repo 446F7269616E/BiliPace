@@ -9,7 +9,7 @@ Hourleaf 的单一用途是：帮助用户按自己的规则管理网站使用�
 
 - 计时、时段、额度、计划、统计和站点适配必须服务于该用途；
 - 不注入广告，不出售数据，不将浏览活动用于画像或无关分析；
-- 不把模块获取伪装成普通功能开关，不静默安装其他扩展；
+- 不要求用户安装额外扩展，不从设置页下载或执行模块代码；
 - 商店说明、权限理由、隐私政策和实际行为必须一致。
 
 ## 权限预算
@@ -28,12 +28,10 @@ Hourleaf 的单一用途是：帮助用户按自己的规则管理网站使用�
 ## 模块与远程代码
 
 - 扩展不得执行从 GitHub/CDN 下载的普通 JavaScript、WebAssembly、`eval`、`new Function` 或远程动态 import；
-- 模块目录只允许版本、链接、权限和校验值等元数据，不能成为远程指令解释器；
-- Chrome 设置页不能内联安装另一扩展，只能打开正常的 Chrome Web Store 详情页；
-- Firefox 正式安装必须使用 AMO 签名包；
-- Safari 模块必须随签名 App/扩展一同接受审核，设置页不能下载并执行新代码；
+- 模块代码必须预装在同一个审核包中，设置页只能切换本地状态；
+- Chrome、Firefox 与 Safari 的模块都随各自签名扩展一同接受审核；
 - GitHub ZIP 只标为源码或开发侧载产物；
-- 核心版构建不得静态导入 Bilibili/Ave 代码，模块 bundle 只能包含仓库中可审计的本地代码。
+- 通用 content 脚本不得静态导入站点运行时代码；模块代码块只能在启用且已授权的网站注册。
 
 参考官方边界：[Chrome MV3 远程代码](https://developer.chrome.com/docs/extensions/develop/migrate/remote-hosted-code)、[Chrome 分发](https://developer.chrome.com/docs/extensions/how-to/distribute)、[Firefox 签名](https://extensionworkshop.com/documentation/publish/signing-and-distribution-overview/)、[Safari 分发](https://developer.apple.com/documentation/safariservices/distributing-your-safari-web-extension)。
 
@@ -49,24 +47,24 @@ Hourleaf 的单一用途是：帮助用户按自己的规则管理网站使用�
 
 ## 跨浏览器产物
 
-| 平台     | 核心目录        | 公开安装要求                                           |
+| 平台     | 完整扩展目录    | 公开安装要求                                           |
 | -------- | --------------- | ------------------------------------------------------ |
 | Chromium | `dist/chromium` | Chrome Web Store 审核；开发版可加载已解压目录          |
 | Firefox  | `dist/firefox`  | 固定 Gecko ID、AMO 签名、准确的数据声明                |
 | Safari   | `dist/safari`   | Xcode 承载 App、Developer ID/App Store 签名与公证/审核 |
 
-模块 bundle 位于 `dist/bundles/<module>/<platform>`。三平台共用业务与 UI；平台 manifest 只保留实际支持的权限/API。Safari 不支持的 API 必须显式降级，不能让扩展页闪退。
+模块代码块位于各平台目录的 `modules/`。三平台共用业务与 UI；平台 manifest 只保留实际支持的权限/API。Safari 不支持的 API 必须显式降级，不能让扩展页闪退。
 
 ## 静态与手工门禁
 
 - [ ] TypeScript、ESLint、Prettier 与三平台构建通过；
 - [ ] manifest 只有预算内权限，CSP 无远程执行源；
-- [ ] 核心 bundle 搜索不到 Bilibili/Ave 选择器、域名或导入；
+- [ ] 通用 `content.js` 搜索不到站点选择器、域名或运行时导入；
 - [ ] 只有用户点击添加网站时出现精确权限请求；拒绝/撤销可恢复；
 - [ ] 可见、焦点、idle、休眠、跨午夜和 SPA 路由不会重复或虚增计时；
 - [ ] allow/block 优先级、每日额度、临时访问与预设符合领域规则；
-- [ ] 核心版与 Bilibili bundle 均可加载，模块停用后表现与通用网站一致；
-- [ ] Ave ShadowRoot 选择器失效时安全放行，不隐藏整个未知页面；
+- [ ] 单一扩展可加载，模块停用或删除后表现与通用网站一致；
+- [ ] 模块兼容选择器失效时安全放行，不隐藏整个未知页面；
 - [ ] 固定左侧导航、键盘操作、200% 缩放与读屏名称可用；
 - [ ] 隐私政策、商店数据披露与抓包结果一致；
 - [ ] 公共仓库与产物不含密钥、证书、profile、账号或用户测试数据。

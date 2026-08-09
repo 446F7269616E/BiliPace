@@ -180,8 +180,24 @@ export async function installWebExtensionMock(context: BrowserContext): Promise<
             break;
           case "GET_SITE_MODULES":
             result = ok({
-              schemaVersion: 1,
-              installations: {}
+              schemaVersion: 2,
+              installations: {
+                "hourleaf.site.bilibili": {
+                  manifest: {
+                    id: "hourleaf.site.bilibili",
+                    version: "1.0.0",
+                    name: "Bilibili",
+                    hosts: ["https://www.bilibili.com/*"],
+                    sections: [],
+                    capabilities: []
+                  },
+                  source: "bundled",
+                  enabled: false,
+                  installedAt: 1,
+                  updatedAt: 1
+                }
+              },
+              removedModuleIds: []
             });
             break;
           case "UPDATE_SETTINGS":

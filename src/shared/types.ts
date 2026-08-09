@@ -43,8 +43,8 @@ export interface SiteModuleSection {
 
 /**
  * Declarative metadata only. Installing this record never downloads or executes
- * code; executable modules must be bundled with or separately reviewed by the
- * browser store package.
+ * code; executable modules must be reviewed and shipped inside the browser
+ * store package.
  */
 export interface SiteModuleManifest {
   id: SiteModuleId;
@@ -55,7 +55,7 @@ export interface SiteModuleManifest {
   capabilities: SiteModuleCapability[];
 }
 
-export type SiteModuleSource = "bundled" | "store";
+export type SiteModuleSource = "bundled";
 
 export interface SiteModuleInstallation {
   manifest: SiteModuleManifest;
@@ -66,8 +66,10 @@ export interface SiteModuleInstallation {
 }
 
 export interface SiteModuleStore {
-  schemaVersion: 1;
+  schemaVersion: 2;
   installations: Record<SiteModuleId, SiteModuleInstallation>;
+  /** A tombstone prevents a user-deleted preinstalled module from reappearing. */
+  removedModuleIds: SiteModuleId[];
 }
 
 /** JavaScript weekday: Sunday = 0, Monday = 1, ... Saturday = 6. */

@@ -157,7 +157,7 @@ export const BILIBILI_SITE_MODULE_DESCRIPTOR = Object.freeze({
       ]
     },
     {
-      id: "ave-mujica",
+      id: "shadow-layout",
       root: { id: "bewly-shadow", kind: "open-shadow", hostSelector: "#bewly" },
       hiddenElementSelectors: {
         "home-feed": [".video-card"],
@@ -176,7 +176,7 @@ export const BILIBILI_SITE_MODULE_DESCRIPTOR = Object.freeze({
   ],
   lifecycle: [{ target: "window", event: "bewlyMounted" }],
   distribution: {
-    artifactName: "hourleaf-site-bilibili",
+    artifactName: "hourleaf-module-bilibili",
     execution: "bundled-reviewed"
   }
 } as const satisfies SiteModuleDescriptor);

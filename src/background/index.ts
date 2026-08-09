@@ -11,12 +11,17 @@ import { SettingsRepository, SiteModuleRepository } from "../shared/storage";
 import type { DeepPartial, FocusSettings, UsagePeriod } from "../shared/types";
 import { PlanService } from "./plan";
 import { UsageTracker } from "./tracker";
+import {
+  PREINSTALLED_SITE_MODULE_MANIFESTS,
+  PREINSTALLED_SITE_MODULES
+} from "../modules/preinstalled";
 
 const api = getExtensionApi();
 const settings = new SettingsRepository();
 const analytics = new AnalyticsService();
 const managedSites = new ManagedSiteService(settings);
-const modules = new SiteModuleRepository();
+const modules = new SiteModuleRepository(undefined, PREINSTALLED_SITE_MODULE_MANIFESTS);
+const modulesReady = modules.initialize();
 const resolveManagedTarget = async (url: string, targetId?: string) => {
   const resolved = await managedSites.resolve(url, targetId);
   return resolved ? { siteId: resolved.site.id, target: resolved.target } : null;
@@ -66,9 +71,18 @@ if (api) {
   void tracker.start().catch((error: unknown) => {
     console.warn("Hourleaf usage tracking could not start", error);
   });
-  void managedSites.rebuildRegistrations().catch((error: unknown) => {
-    console.warn("Hourleaf could not rebuild website registrations", error);
-  });
+  void modulesReady
+    .then((store) =>
+      managedSites.rebuildRegistrations(
+        PREINSTALLED_SITE_MODULES.map((definition) => ({
+          ...definition,
+          enabled: store.installations[definition.manifest.id]?.enabled === true
+        }))
+      )
+    )
+    .catch((error: unknown) => {
+      console.warn("Hourleaf could not rebuild website registrations", error);
+    });
 }
 
 export async function handleMessage(
@@ -108,18 +122,40 @@ export async function handleMessage(
       assertExtensionPageSender(sender);
       const result = await managedSites.addAuthorized(message.url, message.label);
       if (result.granted) {
+        await modulesReady;
         const moduleStore = await modules.get();
         for (const installation of Object.values(moduleStore.installations)) {
           if (installation.enabled) {
-            await managedSites.applyModuleManifest(installation.manifest, true);
+            const definition = PREINSTALLED_SITE_MODULES.find(
+              (candidate) => candidate.manifest.id === installation.manifest.id
+            );
+            await managedSites.applyModuleManifest(
+              installation.manifest,
+              true,
+              definition?.contentScript
+            );
           }
         }
       }
       return result;
     }
-    case "UPDATE_MANAGED_SITE":
+    case "UPDATE_MANAGED_SITE": {
       assertExtensionPageSender(sender);
-      return managedSites.updateSite(message.siteId, message.patch);
+      const updated = await managedSites.updateSite(message.siteId, message.patch);
+      if (updated.enabled) {
+        const store = await modulesReady;
+        for (const definition of PREINSTALLED_SITE_MODULES) {
+          if (store.installations[definition.manifest.id]?.enabled) {
+            await managedSites.applyModuleManifest(
+              definition.manifest,
+              true,
+              definition.contentScript
+            );
+          }
+        }
+      }
+      return updated;
+    }
     case "UPDATE_SITE_TARGET":
       assertExtensionPageSender(sender);
       return managedSites.updateTarget(message.targetId, message.patch);
@@ -128,29 +164,37 @@ export async function handleMessage(
       return managedSites.remove(message.siteId);
     case "GET_SITE_MODULES":
       assertExtensionPageSender(sender);
+      await modulesReady;
       return modules.get();
-    case "INSTALL_SITE_MODULE":
+    case "RESTORE_SITE_MODULE":
       assertExtensionPageSender(sender);
       {
-        const store = await modules.install(message.manifest, message.source);
-        const installation = store.installations[message.manifest.id];
-        if (!installation) throw new Error("Site module manifest was rejected");
-        await managedSites.applyModuleManifest(installation.manifest, true);
-        return store;
+        await modulesReady;
+        return modules.restore(message.moduleId);
       }
     case "SET_SITE_MODULE_ENABLED": {
       assertExtensionPageSender(sender);
+      await modulesReady;
       const store = await modules.get();
       const installation = store.installations[message.moduleId];
       if (!installation) throw new Error("Site module is not installed");
-      await managedSites.applyModuleManifest(installation.manifest, message.enabled);
+      const definition = PREINSTALLED_SITE_MODULES.find(
+        (candidate) => candidate.manifest.id === message.moduleId
+      );
+      if (!definition) throw new Error("Site module is not included in this Hourleaf build");
+      await managedSites.applyModuleManifest(
+        installation.manifest,
+        message.enabled,
+        definition.contentScript
+      );
       return modules.setEnabled(message.moduleId, message.enabled);
     }
     case "UNINSTALL_SITE_MODULE": {
       assertExtensionPageSender(sender);
+      await modulesReady;
       const store = await modules.get();
       const installation = store.installations[message.moduleId];
-      if (installation) await managedSites.applyModuleManifest(installation.manifest, false);
+      if (installation) await managedSites.removeModuleManifest(installation.manifest);
       return modules.uninstall(message.moduleId);
     }
     case "GET_TRACKING_STATUS":

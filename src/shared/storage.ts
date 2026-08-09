@@ -96,28 +96,54 @@ export class RawUsageRepository {
 
 export class SiteModuleRepository {
   private writeQueue: Promise<unknown> = Promise.resolve();
+  private readonly preinstalled: SiteModuleManifest[];
 
-  constructor(private readonly area: StorageAreaLike = getLocalStorageArea()) {}
+  constructor(
+    private readonly area: StorageAreaLike = getLocalStorageArea(),
+    preinstalled: readonly SiteModuleManifest[] = []
+  ) {
+    this.preinstalled = preinstalled
+      .map(normalizeSiteModuleManifest)
+      .filter((manifest): manifest is SiteModuleManifest => manifest !== null);
+  }
 
   async get(): Promise<SiteModuleStore> {
     const result = await storageGet(this.area, STORAGE_KEYS.modules);
     return normalizeSiteModuleStore(result[STORAGE_KEYS.modules]);
   }
 
-  async install(
-    manifest: SiteModuleManifest,
-    source: SiteModuleSource,
-    now = Date.now()
-  ): Promise<SiteModuleStore> {
-    const normalizedManifest = normalizeSiteModuleManifest(manifest);
-    if (!normalizedManifest) throw new Error("Invalid site module manifest");
+  async initialize(now = Date.now()): Promise<SiteModuleStore> {
     return this.update((store) => {
-      const previous = store.installations[normalizedManifest.id];
-      store.installations[normalizedManifest.id] = {
-        manifest: normalizedManifest,
-        source,
-        enabled: previous?.enabled ?? true,
-        installedAt: previous?.installedAt ?? now,
+      for (const manifest of this.preinstalled) {
+        const previous = store.installations[manifest.id];
+        if (previous) {
+          const versionChanged = previous.manifest.version !== manifest.version;
+          previous.manifest = manifest;
+          previous.source = "bundled";
+          if (versionChanged) previous.updatedAt = now;
+        } else if (!store.removedModuleIds.includes(manifest.id)) {
+          store.installations[manifest.id] = {
+            manifest,
+            source: "bundled",
+            enabled: false,
+            installedAt: now,
+            updatedAt: now
+          };
+        }
+      }
+    });
+  }
+
+  async restore(id: string, now = Date.now()): Promise<SiteModuleStore> {
+    const manifest = this.preinstalled.find((candidate) => candidate.id === id);
+    if (!manifest) throw new Error("Site module is not included in this Hourleaf build");
+    return this.update((store) => {
+      store.removedModuleIds = store.removedModuleIds.filter((moduleId) => moduleId !== id);
+      store.installations[id] = {
+        manifest,
+        source: "bundled",
+        enabled: false,
+        installedAt: now,
         updatedAt: now
       };
     });
@@ -135,6 +161,9 @@ export class SiteModuleRepository {
   async uninstall(id: string): Promise<SiteModuleStore> {
     return this.update((store) => {
       delete store.installations[id];
+      if (this.preinstalled.some((manifest) => manifest.id === id)) {
+        store.removedModuleIds = [...new Set([...store.removedModuleIds, id])].slice(0, 32);
+      }
     });
   }
 
@@ -458,13 +487,22 @@ function isLegacyIdentity(value: unknown): value is string {
 }
 
 function normalizeSiteModuleStore(value: unknown): SiteModuleStore {
-  const store: SiteModuleStore = { schemaVersion: 1, installations: {} };
+  const store: SiteModuleStore = { schemaVersion: 2, installations: {}, removedModuleIds: [] };
   if (!isRecord(value) || !isRecord(value.installations)) return store;
+  if (value.schemaVersion === 2 && Array.isArray(value.removedModuleIds)) {
+    const removedModuleIds = new Set<string>();
+    for (const moduleId of (value.removedModuleIds as unknown[]).slice(0, 32)) {
+      if (typeof moduleId === "string" && isStableTargetId(moduleId)) {
+        removedModuleIds.add(moduleId);
+      }
+    }
+    store.removedModuleIds = [...removedModuleIds];
+  }
   for (const [id, raw] of Object.entries(value.installations).slice(0, 32)) {
     if (!isStableTargetId(id) || !isRecord(raw)) continue;
     const manifest = normalizeSiteModuleManifest(raw.manifest);
     if (!manifest || manifest.id !== id) continue;
-    const source: SiteModuleSource = raw.source === "store" ? "store" : "bundled";
+    const source: SiteModuleSource = "bundled";
     const installation: SiteModuleInstallation = {
       manifest,
       source,
@@ -474,6 +512,7 @@ function normalizeSiteModuleStore(value: unknown): SiteModuleStore {
     };
     store.installations[id] = installation;
   }
+  for (const id of store.removedModuleIds) delete store.installations[id];
   return store;
 }
 

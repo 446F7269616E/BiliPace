@@ -7,9 +7,8 @@ import {
   addManagedSite,
   getSiteModules,
   hasWebsitePermission,
-  isBilibiliModuleBundled,
   normalizeWebsiteInput,
-  openBilibiliModuleDownload,
+  removeSiteModule,
   removeManagedSite,
   requestBilibiliModulePermissions,
   requestWebsitePermission,
@@ -261,16 +260,33 @@ function createSiteRow(site: ManagedSite): HTMLElement {
 
 function createModulesCard(): HTMLElement {
   const installation = modules?.installations[BILIBILI_MODULE_ID];
-  const installed = isBilibiliModuleBundled;
-  const enabled = Boolean(isBilibiliModuleBundled && installation?.enabled);
-  const action = !installed ? "install" : enabled ? "disable" : "enable";
+  const installed = Boolean(installation);
+  const enabled = Boolean(installation?.enabled);
+  const action = !installed ? "restore" : enabled ? "disable" : "enable";
   const button = element("button", {
-    className: `btn${action === "install" ? " btn--primary" : ""}`,
-    text: action === "install" ? "获取" : action === "enable" ? "启用" : "停用",
+    className: `btn${action === "restore" || action === "enable" ? " btn--primary" : ""}`,
+    text: action === "restore" ? "恢复" : action === "enable" ? "启用" : "停用",
     attrs: { type: "button", "data-testid": "bilibili-module-action" }
   });
   button.addEventListener("click", () => {
     void updateModule(action, button);
+  });
+  const removeButton = element("button", {
+    className: "btn btn--danger",
+    text: "删除",
+    attrs: { type: "button", "data-testid": "bilibili-module-remove" }
+  });
+  removeButton.disabled = !installed;
+  removeButton.addEventListener("click", () => {
+    openConfirmation({
+      title: "删除哔哩哔哩模块？",
+      actionLabel: "删除",
+      onConfirm: async () => {
+        await removeSiteModule(BILIBILI_MODULE_ID);
+        toast("模块已删除");
+        await loadSettings();
+      }
+    });
   });
   return element("section", {
     className: "home-settings__card card home-modules",
@@ -280,7 +296,7 @@ function createModulesCard(): HTMLElement {
         className: "home-settings__card-heading",
         children: [
           element("h2", { text: "模块", attrs: { id: "modules-title" } }),
-          element("span", { className: "status-chip", text: installed ? "已获取" : "可获取" })
+          element("span", { className: "status-chip", text: installed ? "已预装" : "已删除" })
         ]
       }),
       element("article", {
@@ -294,7 +310,7 @@ function createModulesCard(): HTMLElement {
             className: "home-module-row__copy",
             children: [
               element("strong", { text: "哔哩哔哩" }),
-              element("p", { text: "视频、动态、直播与 Ave Mujica 内容管理" }),
+              element("p", { text: "视频、动态、直播与站内内容管理" }),
               element("div", {
                 className: "home-module-row__capabilities",
                 children: ["分类", "内容过滤", "计划", "使用统计"].map((label) =>
@@ -305,9 +321,12 @@ function createModulesCard(): HTMLElement {
           }),
           element("span", {
             className: `status-chip${enabled ? " status-chip--success" : ""}`,
-            text: enabled ? "已启用" : installed ? "已停用" : "未获取"
+            text: enabled ? "已启用" : installed ? "已停用" : "已删除"
           }),
-          button
+          element("div", {
+            className: "home-module-row__actions",
+            children: [button, removeButton]
+          })
         ]
       })
     ]
@@ -353,16 +372,11 @@ async function setSiteEnabled(
 }
 
 async function updateModule(
-  action: "install" | "enable" | "disable",
+  action: "restore" | "enable" | "disable",
   button: HTMLButtonElement
 ): Promise<void> {
   setButtonBusy(button, true);
   try {
-    if (action === "install" && !isBilibiliModuleBundled) {
-      openBilibiliModuleDownload();
-      toast("已打开模块下载页");
-      return;
-    }
     if (action === "enable") {
       const granted = await requestBilibiliModulePermissions();
       if (!granted) {
@@ -372,7 +386,7 @@ async function updateModule(
       await addBilibiliModuleSites();
     }
     await setSiteModuleState(BILIBILI_MODULE_ID, action);
-    toast(action === "install" ? "模块已获取" : action === "enable" ? "模块已启用" : "模块已停用");
+    toast(action === "restore" ? "模块已恢复" : action === "enable" ? "模块已启用" : "模块已停用");
     await loadSettings();
   } catch (error) {
     setButtonBusy(button, false);

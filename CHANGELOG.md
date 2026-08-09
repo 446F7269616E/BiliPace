@@ -4,13 +4,26 @@ All notable changes to Hourleaf will be documented in this file. The format foll
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-08-09
+
+### Changed
+
+- Consolidated each browser release into one Hourleaf extension with all reviewed site modules preinstalled.
+- Split module runtime code into local chunks that are registered only while the module is enabled.
+- Replaced module download actions with local enable, disable, delete and restore controls.
+
+### Privacy
+
+- Preinstalled modules remain disabled and request no website access until the user enables them.
+- Deleting a module unregisters its code chunk and removes its module-specific targets without downloading or executing remote code.
+
 ## [0.5.0] - 2026-08-09
 
 ### Added
 
 - Added user-managed rules, limits, plans and local time insights for arbitrary HTTP and HTTPS websites.
 - Added exact, on-demand website permissions and persistent dynamic content-script registration.
-- Added a bounded site-module contract and a separately built Bilibili/Ave module bundle.
+- Added a bounded site-module contract and Bilibili site module.
 - Added site and module management to the shared Hourleaf settings experience.
 
 ### Changed
@@ -18,7 +31,7 @@ All notable changes to Hourleaf will be documented in this file. The format foll
 - Renamed the extension to Hourleaf while retaining legacy storage keys and the Firefox extension ID for upgrades.
 - Moved Bilibili routes, selectors, content filtering and video identity into the optional `hourleaf.site.bilibili` module.
 - Migrated settings, usage and temporary access to generic site/target schemas.
-- Split release artifacts into a lightweight core and reviewed module bundles without remotely executed code.
+- Separated generic website logic from reviewed site-module code without remotely executed code.
 
 ### Privacy
 
@@ -39,25 +52,7 @@ All notable changes to Hourleaf will be documented in this file. The format foll
 - Replaced tutorial-style and recommendation-style interface copy with direct labels, states and actions.
 - Migrated stored focus settings to schema version 2 while retaining the existing storage key and treating legacy schedules as block rules.
 
-### Fixed
-
-- Fixed Ave Mujica content blocking by responding to its window-level mount event and applying filters inside every open `#bewly` ShadowRoot.
-- Kept whole-page blocking active when Ave Mujica replaces the document body and restored interactivity when access becomes available.
-
-## [0.3.1] - 2026-08-09
-
-### Changed
-
-- Narrowed BewlyBewly! Ave Mujica support to core timing, focus blocking, plan mode and stable Shadow DOM search/card helpers.
 - Content filtering now skips unchanged 15-second refreshes and observes live feeds only when non-empty title rules are enabled.
-
-### Removed
-
-- Removed iframe URL inspection, unused experience detection, broad fallback scans and selectors that could hide an entire Ave Mujica page.
-
-### Fixed
-
-- ShadowRoot remounts are now compared by root identity, and unknown Ave Mujica virtual routes safely remain unmanaged instead of being attributed to the homepage.
 
 ## [0.3.0] - 2026-08-09
 
@@ -65,7 +60,6 @@ All notable changes to Hourleaf will be documented in this file. The format foll
 
 - Added modular in-page distraction controls for recommendations, dynamic feeds, related videos, comments, search suggestions, ads and top navigation.
 - Added title keyword and safety-bounded regular-expression video-card filters plus the `/` search shortcut.
-- Added a Shadow DOM-aware BewlyBewly! Ave Mujica adapter, virtual-route classification and visible drawer URL attribution.
 - Added a first-level Focus Center with live timing, today usage, focus status, plan status and clear routes to every full page.
 - Added a normative UX writing standard for user-facing text, errors, empty states and terminology.
 

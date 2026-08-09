@@ -1,7 +1,16 @@
 import type { SiteModuleRuntime } from "./contracts";
 
-const modules = new Map<string, SiteModuleRuntime>();
-const listeners = new Set<() => void>();
+interface RegistryState {
+  modules: Map<string, SiteModuleRuntime>;
+  listeners: Set<() => void>;
+}
+
+const REGISTRY_KEY = "__hourleafSiteModuleRegistryV1__";
+const scope = globalThis as typeof globalThis & { [REGISTRY_KEY]?: RegistryState };
+const state =
+  scope[REGISTRY_KEY] ??
+  (scope[REGISTRY_KEY] = { modules: new Map<string, SiteModuleRuntime>(), listeners: new Set() });
+const { modules, listeners } = state;
 
 /**
  * Registers only already-reviewed local code. Module metadata alone cannot add

@@ -2,11 +2,7 @@ import { BILIBILI_SITE_MODULE_MANIFEST } from "../modules/bilibili/metadata";
 import { sendRequest } from "../shared/messages";
 import type { SiteModuleStore } from "../shared/types";
 
-export type ModuleAction = "install" | "enable" | "disable";
-
-export const isBilibiliModuleBundled = __HOURLEAF_BILIBILI_BUNDLED__;
-export const BILIBILI_MODULE_DOWNLOAD_URL =
-  "https://github.com/446F7269616E/Hourleaf/releases/latest";
+export type ModuleAction = "restore" | "enable" | "disable";
 
 export async function getSiteModules(): Promise<SiteModuleStore | null> {
   try {
@@ -30,32 +26,19 @@ export async function removeManagedSite(siteId: string): Promise<void> {
 }
 
 export async function setSiteModuleState(moduleId: string, action: ModuleAction): Promise<void> {
-  if (action === "install") {
-    const manifest = BILIBILI_SITE_MODULE_MANIFEST;
-    await sendRequest({
-      type: "INSTALL_SITE_MODULE",
-      source: "bundled",
-      manifest: {
-        ...manifest,
-        hosts: [...manifest.hosts],
-        sections: manifest.sections.map((section) => ({
-          ...section,
-          ...(section.hosts ? { hosts: [...section.hosts] } : {})
-        })),
-        capabilities: [...manifest.capabilities]
-      }
-    });
+  if (action === "restore") {
+    await sendRequest({ type: "RESTORE_SITE_MODULE", moduleId });
     return;
   }
   if (action === "enable") {
     const store = await getSiteModules();
-    if (!store?.installations[moduleId]) await setSiteModuleState(moduleId, "install");
+    if (!store?.installations[moduleId]) await setSiteModuleState(moduleId, "restore");
   }
   await sendRequest({ type: "SET_SITE_MODULE_ENABLED", moduleId, enabled: action === "enable" });
 }
 
-export function openBilibiliModuleDownload(): void {
-  window.open(BILIBILI_MODULE_DOWNLOAD_URL, "_blank", "noopener,noreferrer");
+export async function removeSiteModule(moduleId: string): Promise<void> {
+  await sendRequest({ type: "UNINSTALL_SITE_MODULE", moduleId });
 }
 
 export async function requestBilibiliModulePermissions(): Promise<boolean> {

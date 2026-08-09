@@ -197,10 +197,8 @@ function createSettingsContent(): HTMLElement {
     className: "settings-content",
     children: [
       createSiteContextArea(site),
-      ...(__HOURLEAF_BILIBILI_BUNDLED__
-        ? siteUsesModule(site, "hourleaf.site.bilibili")
-          ? [createContentFiltersArea(), createSectionsArea(site)]
-          : [createGenericTargetsArea(site)]
+      ...(siteUsesModule(site, "hourleaf.site.bilibili")
+        ? [createContentFiltersArea(), createSectionsArea(site)]
         : [createGenericTargetsArea(site)])
     ]
   });
@@ -487,7 +485,7 @@ function siteUsesModule(site: ManagedSite, moduleId: string): boolean {
 }
 
 function moduleDisplayName(moduleId: string): string {
-  return moduleId === "hourleaf.site.bilibili" ? "哔哩哔哩 · Ave Mujica" : moduleId;
+  return moduleId === "hourleaf.site.bilibili" ? "哔哩哔哩" : moduleId;
 }
 
 function createContentFiltersArea(): HTMLElement {

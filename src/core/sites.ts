@@ -17,6 +17,13 @@ import type {
 } from "../shared/types";
 
 const REGISTRATION_PREFIX = "hourleaf-site-";
+const MODULE_REGISTRATION_PREFIX = "hourleaf-module-";
+
+export interface EnabledSiteModuleRegistration {
+  manifest: SiteModuleManifest;
+  contentScript: string;
+  enabled: boolean;
+}
 
 export interface ResolvedTarget {
   site: ManagedSite;
@@ -106,11 +113,15 @@ export class ManagedSiteService {
     };
     await this.settings.set({ ...current, sites: { ...current.sites, [siteId]: updated } });
     if (updated.enabled) await this.ensureRegistration(updated);
-    else await scriptingUnregisterContentScripts([registrationId(site.id)]);
+    else await this.unregisterSiteRegistrations(site);
     return updated;
   }
 
-  async applyModuleManifest(manifest: SiteModuleManifest, enabled: boolean): Promise<void> {
+  async applyModuleManifest(
+    manifest: SiteModuleManifest,
+    enabled: boolean,
+    contentScript?: string
+  ): Promise<void> {
     const current = await this.settings.get();
     const sites = { ...current.sites };
     const targets = { ...current.targets };
@@ -152,6 +163,41 @@ export class ManagedSiteService {
       }
     }
     await this.settings.set({ ...current, sites, targets });
+    for (const site of Object.values(sites)) {
+      if (!manifest.hosts.some((pattern) => modulePatternMatches(pattern, site.origin))) continue;
+      if (site.enabled && enabled && contentScript) {
+        await this.ensureModuleRegistration(site, manifest.id, contentScript);
+      } else {
+        await scriptingUnregisterContentScripts([moduleRegistrationId(site.id, manifest.id)]).catch(
+          () => undefined
+        );
+      }
+    }
+  }
+
+  async removeModuleManifest(manifest: SiteModuleManifest): Promise<void> {
+    const current = await this.settings.get();
+    const sites = Object.fromEntries(
+      Object.entries(current.sites).map(([siteId, site]) => [
+        siteId,
+        {
+          ...site,
+          targetIds: site.targetIds.filter(
+            (targetId) => current.targets[targetId]?.moduleId !== manifest.id
+          )
+        }
+      ])
+    );
+    const targets = Object.fromEntries(
+      Object.entries(current.targets).filter(([, target]) => target.moduleId !== manifest.id)
+    );
+    await this.settings.set({ ...current, sites, targets });
+    const existing = await scriptingGetRegisteredContentScripts().catch(() => []);
+    const registeredIds = new Set(existing.map((script) => script.id));
+    const registrationIds = Object.values(current.sites)
+      .map((site) => moduleRegistrationId(site.id, manifest.id))
+      .filter((id) => registeredIds.has(id));
+    if (registrationIds.length > 0) await scriptingUnregisterContentScripts(registrationIds);
   }
 
   async updateTarget(
@@ -191,7 +237,7 @@ export class ManagedSiteService {
     delete sites[siteId];
     for (const targetId of site.targetIds) delete targets[targetId];
     await this.settings.set({ ...current, sites, targets });
-    await scriptingUnregisterContentScripts([registrationId(siteId)]);
+    await this.unregisterSiteRegistrations(site);
     const originStillUsed = Object.values(sites).some(
       (candidate) => candidate.origin === site.origin
     );
@@ -232,11 +278,15 @@ export class ManagedSiteService {
   }
 
   /** Reconciles persistent registrations without requesting new permissions. */
-  async rebuildRegistrations(): Promise<void> {
+  async rebuildRegistrations(
+    modules: readonly EnabledSiteModuleRegistration[] = []
+  ): Promise<void> {
     const existing = await scriptingGetRegisteredContentScripts().catch(() => []);
     const ownedIds = existing
       .map((script) => script.id)
-      .filter((id) => id.startsWith(REGISTRATION_PREFIX));
+      .filter(
+        (id) => id.startsWith(REGISTRATION_PREFIX) || id.startsWith(MODULE_REGISTRATION_PREFIX)
+      );
     if (ownedIds.length > 0) await scriptingUnregisterContentScripts(ownedIds);
 
     const { sites } = await this.settings.get();
@@ -245,7 +295,16 @@ export class ManagedSiteService {
       const granted = await permissionsContains([originMatchPattern(site.origin)]).catch(
         () => false
       );
-      if (granted) await this.ensureRegistration(site);
+      if (!granted) continue;
+      await this.ensureRegistration(site);
+      for (const module of modules) {
+        if (
+          module.enabled &&
+          module.manifest.hosts.some((pattern) => modulePatternMatches(pattern, site.origin))
+        ) {
+          await this.ensureModuleRegistration(site, module.manifest.id, module.contentScript);
+        }
+      }
     }
   }
 
@@ -253,6 +312,30 @@ export class ManagedSiteService {
     const id = registrationId(site.id);
     await scriptingUnregisterContentScripts([id]).catch(() => undefined);
     await scriptingRegisterContentScript(id, [originMatchPattern(site.origin)]);
+  }
+
+  private async ensureModuleRegistration(
+    site: ManagedSite,
+    moduleId: string,
+    contentScript: string
+  ): Promise<void> {
+    const id = moduleRegistrationId(site.id, moduleId);
+    await scriptingUnregisterContentScripts([id]).catch(() => undefined);
+    await scriptingRegisterContentScript(id, [originMatchPattern(site.origin)], contentScript);
+  }
+
+  private async unregisterSiteRegistrations(site: ManagedSite): Promise<void> {
+    const matchPattern = originMatchPattern(site.origin);
+    const existing = await scriptingGetRegisteredContentScripts().catch(() => []);
+    const ids = existing
+      .filter(
+        (script) =>
+          (script.id.startsWith(REGISTRATION_PREFIX) ||
+            script.id.startsWith(MODULE_REGISTRATION_PREFIX)) &&
+          (script.id === registrationId(site.id) || script.matches?.includes(matchPattern))
+      )
+      .map((script) => script.id);
+    if (ids.length > 0) await scriptingUnregisterContentScripts(ids);
   }
 }
 
@@ -281,6 +364,10 @@ export function sameOrigin(left: string, right: string): boolean {
 
 function registrationId(siteId: SiteId): string {
   return `${REGISTRATION_PREFIX}${siteId.replace(/[^A-Za-z0-9_-]/g, "-")}`.slice(0, 128);
+}
+
+function moduleRegistrationId(siteId: SiteId, moduleId: string): string {
+  return `${MODULE_REGISTRATION_PREFIX}${hashText(`${siteId}\u0000${moduleId}`)}`;
 }
 
 function createOpaqueId(prefix: "site" | "target"): string {

@@ -51,9 +51,9 @@ describe("hourleaf.site.bilibili", () => {
     expect(canonicalVideoUrl("BV1xx411c7mD")).toBe("https://www.bilibili.com/video/BV1xx411c7mD");
   });
 
-  it("keeps Ave Shadow DOM hooks inside the optional descriptor", () => {
+  it("keeps shadow-root compatibility hooks inside the module descriptor", () => {
     const profile = BILIBILI_SITE_MODULE_DESCRIPTOR.contentProfiles.find(
-      (candidate) => candidate.id === "ave-mujica"
+      (candidate) => candidate.id === "shadow-layout"
     );
     expect(profile?.root).toEqual({
       id: "bewly-shadow",

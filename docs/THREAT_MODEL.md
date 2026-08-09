@@ -41,7 +41,7 @@ source/dependencies ─► CI/build ─► store signing/review ─► browser p
 - 添加未声明主机、远程脚本或任意 CSS/HTML；
 - 绕过用户的网站开关、权限、时间规则或计时条件。
 
-Bilibili/Ave 模块只处理已声明域名。ShadowRoot 兼容失效时停止增强，不隐藏未知容器；不启用 `all_frames`，避免重复会话。
+Bilibili 模块只处理已声明域名。ShadowRoot 兼容失效时停止增强，不隐藏未知容器；不启用 `all_frames`，避免重复会话。
 
 ## 剩余风险
 
