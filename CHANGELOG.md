@@ -4,6 +4,21 @@ All notable changes to BiliPace will be documented in this file. The format foll
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-08-09
+
+### Changed
+
+- Narrowed BewlyBewly! Ave Mujica support to core timing, focus blocking, plan mode and stable Shadow DOM search/card helpers.
+- Content filtering now skips unchanged 15-second refreshes and observes live feeds only when non-empty title rules are enabled.
+
+### Removed
+
+- Removed iframe URL inspection, unused experience detection, broad fallback scans and selectors that could hide an entire Ave Mujica page.
+
+### Fixed
+
+- ShadowRoot remounts are now compared by root identity, and unknown Ave Mujica virtual routes safely remain unmanaged instead of being attributed to the homepage.
+
 ## [0.3.0] - 2026-08-09
 
 ### Added

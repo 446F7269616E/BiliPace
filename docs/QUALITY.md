@@ -1,7 +1,7 @@
 # BiliPace 质量与商店合规基线
 
 > 状态：发布门禁（normative）
-> 最近核对：2026-08-06
+> 最近核对：2026-08-09
 > 产品名：BiliPace（哔哩节拍），非哔哩哔哩官方产品
 
 本文记录 Chrome、Firefox 与 Safari 的质量边界。具体架构、手工验收、发布步骤和威胁模型分别见 [ARCHITECTURE.md](./ARCHITECTURE.md)、[MANUAL_ACCEPTANCE.md](./MANUAL_ACCEPTANCE.md)、[RELEASE_CHECKLIST.md](./RELEASE_CHECKLIST.md) 与 [THREAT_MODEL.md](./THREAT_MODEL.md)。这里的“必须”是公开发布门禁，不是建议。
@@ -117,7 +117,7 @@ Playwright 的 Firefox 项目用于验证 popup/options/dashboard/plan 的共享
 - [ ] Safari packager 零未处置警告；macOS 与 iOS 权限拒绝、授权、撤销均通过。
 - [ ] `PRIVACY.md`、商店数据披露和实际网络行为一致；抓包确认没有非 Bilibili/商店更新流量。
 - [ ] 公共仓库不含密钥、签名证书、Apple provisioning profile、AMO/CWS API 凭据或用户测试数据。
-- [ ] 原生 Bilibili 与 BewlyBewly! Ave Mujica 的内容降噪均安全降级；Shadow DOM 重挂载后可恢复，选择器失效不误隐藏整页。
+- [ ] 原生 Bilibili 的内容降噪完整可用；Ave Mujica 下核心计时、整页专注、计划模式与基础降噪安全降级，ShadowRoot 重挂载后可恢复，选择器失效不误隐藏整页。
 - [ ] 专注中心、观看清单、使用洞察、专注设置全向互通，当前页可识别、同标签跳转且没有导航死路。
 - [ ] 用户界面符合 [UX_WRITING.md](./UX_WRITING.md)：无原始错误、内部模块/配置术语或依赖布局位置的说明。
 

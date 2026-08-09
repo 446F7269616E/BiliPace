@@ -21,13 +21,13 @@ export function classifyBilibiliUrl(input: string | URL): SectionId | null {
   if (host !== "www.bilibili.com") return null;
 
   const bewlyPage = url.searchParams.get("page")?.toLowerCase();
-  if (bewlyPage === "search") return "search";
-  if (bewlyPage === "anime") return "bangumi";
-  if (bewlyPage === "moments") return "dynamic";
-  if (bewlyPage === "history" || bewlyPage === "favorites" || bewlyPage === "watchlater") {
-    return "video";
+  if (bewlyPage) {
+    if (bewlyPage === "search") return "search";
+    if (bewlyPage === "anime") return "bangumi";
+    if (bewlyPage === "moments") return "dynamic";
+    if (bewlyPage === "home") return "home";
+    return null;
   }
-  if (bewlyPage === "home") return "home";
 
   if (path === "/" || path === "/index.html") return "home";
   if (path === "/v/dynamic" || path.startsWith("/v/dynamic/") || path === "/dynamic") {

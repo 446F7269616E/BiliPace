@@ -34,14 +34,14 @@ adapters: Chromium SW / Firefox event page / Safari WebExtension
 
 未知路由采用安全降级：不屏蔽、可归入 `other` 的聚合时长，但不得记录完整 URL。站点 DOM 选择器失效时不得把整个网站永久隐藏；应显示可退出的扩展自有遮罩或停止增强，并记录本机可诊断状态。
 
-BewlyBewly! Ave Mujica 的 `?page=` 虚拟路由必须先映射为统一板块；其开放 Shadow DOM 通过独立 site adapter 暴露为查询根和样式宿主。Document 与 ShadowRoot 分别观察、注入和清理，禁止假设普通 CSS 可以跨越 Shadow DOM。视频抽屉只由顶层会话读取可见 iframe 的 Bilibili URL 作为板块归属，不启用 `all_frames`，避免重复计时与重复重定向。
+BewlyBewly! Ave Mujica 采用最小兼容边界：已知的 `?page=Home/Search/Anime/Moments` 映射为统一板块，未知值按未管理页面安全放行；计时、整页专注和计划模式始终只使用顶层 URL，不扫描 iframe，也不启用 `all_frames`，避免重复会话与重定向。开放 Shadow DOM 仅通过独立 site adapter 暴露为可选查询根，用于稳定的搜索联想、视频卡片标题规则和搜索快捷键；收到 `bewlyMounted` 后按 root 引用恢复，选择器或 ShadowRoot 不可用时直接降级。
 
 ## 内容降噪层
 
 页内内容隐藏与整页专注拦截是两层独立策略。`ContentFilterId` 是稳定领域标识，Bilibili 原生界面与兼容界面各自提供 selector profile；UI 与存储不得持有选择器。
 
 - 选择器失效必须安全放行，不能隐藏未知容器或整个站点。
-- 样式只在设置、路由或 root 生命周期变化时重算；高频信息流只增量扫描新增卡片。
+- 样式只在设置、板块或 root 生命周期变化时重算；只有标题规则实际启用且非空时才观察内容新增，高频信息流只增量扫描新增卡片。
 - 用户正则有长度、数量和安全形状限制；不安全或无效规则被忽略，不能阻塞页面主线程。
 - `/` 搜索快捷键尊重输入框、可编辑元素、组合输入和修饰键。
 - 设置存储变化应立即刷新已打开页面，不依赖刷新网页。

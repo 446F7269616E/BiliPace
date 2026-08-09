@@ -359,7 +359,7 @@ function createContentFiltersArea(): HTMLElement {
       createSectionHeading(
         "content-filters-title",
         "内容降噪",
-        "保留要用的页面，只隐藏容易把注意力带走的部分。兼容 Bilibili 原生界面与 BewlyBewly! Ave Mujica。"
+        "保留要用的页面，只隐藏容易把注意力带走的部分。使用 Ave Mujica 时，搜索联想、标题规则和搜索快捷键仍可用。"
       ),
       element("div", {
         className: "content-filter-card card",

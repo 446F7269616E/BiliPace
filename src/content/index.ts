@@ -5,7 +5,6 @@ import { extractBvidFromVideoUrl } from "../shared/plan";
 import { SECTION_LABELS, type PageDecision } from "../shared/types";
 import { STORAGE_KEYS } from "../shared/storage";
 import { ContentFilterController } from "./content-filters";
-import { getEffectiveBilibiliUrl } from "./site-adapters";
 
 const ROOT_ID = "bilifocus-block-root";
 const HEARTBEAT_INTERVAL_MS = 15_000;
@@ -35,10 +34,7 @@ storageAddChangeListener((changes, areaName) => {
   const changed = changes[STORAGE_KEYS.settings];
   if (!changed || changed.newValue === undefined) return;
   const settings = normalizeSettings(changed.newValue);
-  contentFilters.apply(
-    settings.contentFilters,
-    getEffectiveBilibiliUrl(document, window.location.href)
-  );
+  contentFilters.apply(settings.contentFilters, window.location.href);
   void evaluatePage();
 });
 window.addEventListener("pagehide", () => {
@@ -138,7 +134,7 @@ async function sendSessionUpdate(event: SessionEvent): Promise<void> {
       type: "SESSION_UPDATE",
       event,
       sessionId: SESSION_ID,
-      url: getEffectiveBilibiliUrl(document, window.location.href),
+      url: window.location.href,
       visibility: document.visibilityState === "visible" ? "visible" : "hidden"
     });
   } catch {
@@ -149,7 +145,7 @@ async function sendSessionUpdate(event: SessionEvent): Promise<void> {
 
 async function evaluatePage(): Promise<void> {
   const topLevelUrl = window.location.href;
-  const url = getEffectiveBilibiliUrl(document, topLevelUrl);
+  const url = topLevelUrl;
   const generation = ++evaluationGeneration;
   try {
     const [decision, settings] = await Promise.all([

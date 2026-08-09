@@ -18,36 +18,40 @@ export class ContentFilterController {
   private settings: ContentFilterSettings | null = null;
   private url = "";
   private contentObservers: MutationObserver[] = [];
-  private environmentObserver: MutationObserver | null = null;
   private scanFrame: number | null = null;
-  private pendingScans: Array<{ adapter: ContentSiteAdapter; root: ParentNode }> = [];
-  private rootCount = 0;
+  private pendingScans = new Map<ContentSiteAdapter, Set<ParentNode>>();
+  private knownRoots: ContentRoot[] = [];
+  private applicationSignature = "";
   private keywords: string[] = [];
   private patterns: RegExp[] = [];
 
   constructor(private readonly document: Document = window.document) {
     this.document.addEventListener("keydown", this.handleSearchShortcut, true);
     this.document.addEventListener("bewlyMounted", this.handleEnvironmentChange);
-    this.observeEnvironment();
   }
 
   apply(settings: ContentFilterSettings, url: string): void {
+    const nextSignature = createApplicationSignature(settings, url);
+    const nextRoots = collectAdapterRoots(this.document);
+    const rootsChanged = !haveSameRoots(this.knownRoots, nextRoots);
+
     this.settings = settings;
     this.url = url;
+    if (nextSignature === this.applicationSignature && !rootsChanged) return;
+
+    this.applicationSignature = nextSignature;
+    this.knownRoots = nextRoots;
     this.keywords = settings.videoCards.keywords.map((item) => item.toLocaleLowerCase());
     this.patterns = settings.videoCards.regexPatterns.map(compileSafePattern).filter(isDefined);
-    this.renderStyles();
-    this.refreshCardFiltering();
-    this.observeContentRoots();
+    this.refreshEnhancements();
   }
 
   stop(): void {
     this.settings = null;
+    this.applicationSignature = "";
+    this.knownRoots = [];
     this.disconnectContentObservers();
-    this.environmentObserver?.disconnect();
-    this.environmentObserver = null;
-    if (this.scanFrame !== null) cancelAnimationFrame(this.scanFrame);
-    this.scanFrame = null;
+    this.cancelPendingScans();
     this.removeStyles();
     this.clearFilteredCards();
     this.document.removeEventListener("keydown", this.handleSearchShortcut, true);
@@ -77,9 +81,9 @@ export class ContentFilterController {
 
   private observeContentRoots(): void {
     this.disconnectContentObservers();
+    if (!this.shouldFilterVideoCards()) return;
+
     const adapters = detectSiteAdapters(this.document);
-    const roots = adapters.flatMap((adapter) => adapter.roots(this.document));
-    this.rootCount = new Set(roots).size;
     for (const adapter of adapters) {
       for (const root of adapter.roots(this.document)) {
         const observer = new MutationObserver((mutations) => {
@@ -102,42 +106,54 @@ export class ContentFilterController {
     this.contentObservers = [];
   }
 
-  private observeEnvironment(): void {
-    this.environmentObserver?.disconnect();
-    this.environmentObserver = new MutationObserver(() => {
-      const nextCount = collectAdapterRoots(this.document).length;
-      if (nextCount !== this.rootCount) this.handleEnvironmentChange();
-    });
-    this.environmentObserver.observe(this.document.documentElement, {
-      childList: true,
-      subtree: true
-    });
-  }
-
   private readonly handleEnvironmentChange = (): void => {
     if (!this.settings) return;
-    this.renderStyles();
-    this.refreshCardFiltering();
-    this.observeContentRoots();
+    const nextRoots = collectAdapterRoots(this.document);
+    if (haveSameRoots(this.knownRoots, nextRoots)) return;
+    this.knownRoots = nextRoots;
+    this.refreshEnhancements();
   };
 
   private scheduleCardScan(adapter: ContentSiteAdapter, roots: ParentNode[]): void {
-    for (const root of roots) this.pendingScans.push({ adapter, root });
+    const pendingRoots = this.pendingScans.get(adapter) ?? new Set<ParentNode>();
+    for (const root of roots) pendingRoots.add(root);
+    this.pendingScans.set(adapter, pendingRoots);
     if (this.scanFrame !== null) return;
     this.scanFrame = requestAnimationFrame(() => {
       this.scanFrame = null;
-      const scans = this.pendingScans.splice(0);
-      if (!this.settings?.enabled || !this.settings.videoCards.enabled) return;
-      for (const scan of scans) this.filterCards(scan.root, scan.adapter);
+      const scans = this.pendingScans;
+      this.pendingScans = new Map();
+      if (!this.shouldFilterVideoCards()) return;
+      for (const [pendingAdapter, pendingAdapterRoots] of scans) {
+        for (const root of pendingAdapterRoots) this.filterCards(root, pendingAdapter);
+      }
     });
+  }
+
+  private cancelPendingScans(): void {
+    if (this.scanFrame !== null) cancelAnimationFrame(this.scanFrame);
+    this.scanFrame = null;
+    this.pendingScans.clear();
+  }
+
+  private refreshEnhancements(): void {
+    this.cancelPendingScans();
+    this.renderStyles();
+    this.refreshCardFiltering();
+    this.observeContentRoots();
+  }
+
+  private shouldFilterVideoCards(): boolean {
+    return Boolean(
+      this.settings?.enabled &&
+      this.settings.videoCards.enabled &&
+      (this.keywords.length > 0 || this.patterns.length > 0)
+    );
   }
 
   private refreshCardFiltering(): void {
     this.clearFilteredCards();
-    const cardSettings = this.settings?.videoCards;
-    if (!this.settings?.enabled || !cardSettings?.enabled) return;
-
-    if (this.keywords.length === 0 && this.patterns.length === 0) return;
+    if (!this.shouldFilterVideoCards()) return;
 
     for (const adapter of detectSiteAdapters(this.document)) {
       for (const root of adapter.roots(this.document)) {
@@ -222,13 +238,15 @@ function findCards(root: ParentNode, adapter: ContentSiteAdapter): Element[] {
     if (root instanceof Element && root.matches(selector)) cards.add(root);
     for (const card of root.querySelectorAll(selector)) cards.add(card);
   }
-  if (adapter.id === "bewlybewly-ave-mujica") {
-    for (const link of root.querySelectorAll("a[href*='/video/BV']")) {
-      const card = link.closest("article, li, [class*='video-card'], [class*='feed-card']");
-      if (card) cards.add(card);
-    }
-  }
   return [...cards];
+}
+
+function createApplicationSignature(settings: ContentFilterSettings, url: string): string {
+  return `${classifyBilibiliUrl(url)}\n${JSON.stringify(settings)}`;
+}
+
+function haveSameRoots(current: ContentRoot[], next: ContentRoot[]): boolean {
+  return current.length === next.length && current.every((root) => next.includes(root));
 }
 
 function readCardTitle(card: Element, adapter: ContentSiteAdapter): string {
