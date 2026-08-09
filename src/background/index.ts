@@ -1,27 +1,40 @@
 import { AnalyticsService, parseLocalDate } from "../shared/analytics";
+import { ManagedSiteService, sameOrigin } from "../core/sites";
 import {
   getExtensionApi,
   runtimeAddMessageListener,
   type ExtensionMessageSender
 } from "../shared/browser";
 import { FocusDecisionService } from "../shared/focus";
-import { isBilibiliUrl, parseMessageRequest, type AnyRequest } from "../shared/messages";
-import { SettingsRepository } from "../shared/storage";
+import { isHttpUrl, parseMessageRequest, type AnyRequest } from "../shared/messages";
+import { SettingsRepository, SiteModuleRepository } from "../shared/storage";
 import type { DeepPartial, FocusSettings, UsagePeriod } from "../shared/types";
-import { extractBvidFromVideoUrl } from "../shared/plan";
 import { PlanService } from "./plan";
 import { UsageTracker } from "./tracker";
 
 const api = getExtensionApi();
 const settings = new SettingsRepository();
 const analytics = new AnalyticsService();
-const focus = new FocusDecisionService(settings, undefined, analytics);
+const managedSites = new ManagedSiteService(settings);
+const modules = new SiteModuleRepository();
+const resolveManagedTarget = async (url: string, targetId?: string) => {
+  const resolved = await managedSites.resolve(url, targetId);
+  return resolved ? { siteId: resolved.site.id, target: resolved.target } : null;
+};
+const focus = new FocusDecisionService(settings, undefined, analytics, resolveManagedTarget);
 const plan = new PlanService(settings);
-const tracker = new UsageTracker(analytics, Date.now, api, (url, at) =>
-  Promise.all([
-    focus.decide(url, new Date(at)),
-    plan.decideNavigation(extractBvidFromVideoUrl(url) ?? undefined)
-  ]).then(([focusDecision, planDecision]) => !focusDecision.blocked && planDecision.allowed)
+const tracker = new UsageTracker(
+  analytics,
+  Date.now,
+  api,
+  (url, at, targetId) =>
+    Promise.all([focus.decide(url, new Date(at), targetId), plan.decideNavigation(url)]).then(
+      ([focusDecision, planDecision]) => !focusDecision.blocked && planDecision.allowed
+    ),
+  async (url, targetId) => {
+    const resolved = await managedSites.resolve(url, targetId);
+    return resolved ? { siteId: resolved.site.id, targetId: resolved.target.id } : null;
+  }
 );
 
 if (api) {
@@ -43,7 +56,7 @@ if (api) {
           ok: false,
           error: {
             code: "REQUEST_FAILED",
-            message: error instanceof Error ? error.message : "Unknown BiliPace error"
+            message: error instanceof Error ? error.message : "Unknown Hourleaf error"
           }
         }
       };
@@ -51,7 +64,10 @@ if (api) {
   });
 
   void tracker.start().catch((error: unknown) => {
-    console.warn("BiliPace usage tracking could not start", error);
+    console.warn("Hourleaf usage tracking could not start", error);
+  });
+  void managedSites.rebuildRegistrations().catch((error: unknown) => {
+    console.warn("Hourleaf could not rebuild website registrations", error);
   });
 }
 
@@ -66,6 +82,9 @@ export async function handleMessage(
       assertSettingsPatch(message.patch);
       return settings.update(message.patch);
     case "RESET_SETTINGS":
+      for (const siteId of Object.keys((await managedSites.list()).sites)) {
+        await managedSites.remove(siteId);
+      }
       return settings.reset();
     case "GET_USAGE":
       assertPeriod(message.period);
@@ -76,10 +95,64 @@ export async function handleMessage(
       return { cleared: true as const };
     case "GET_PAGE_DECISION":
       assertUrl(message.url);
-      return focus.decide(message.url);
+      await assertAuthorizedConfiguredUrl(message.url, message.targetId, sender);
+      return focus.decide(message.url, new Date(), message.targetId);
     case "GRANT_TEMPORARY_ACCESS":
       assertUrl(message.url);
-      return focus.grant(message.url);
+      await assertAuthorizedConfiguredUrl(message.url, message.targetId, sender);
+      return focus.grant(message.url, new Date(), message.targetId);
+    case "GET_MANAGED_SITES":
+      assertExtensionPageSender(sender);
+      return managedSites.list();
+    case "ADD_MANAGED_SITE": {
+      assertExtensionPageSender(sender);
+      const result = await managedSites.addAuthorized(message.url, message.label);
+      if (result.granted) {
+        const moduleStore = await modules.get();
+        for (const installation of Object.values(moduleStore.installations)) {
+          if (installation.enabled) {
+            await managedSites.applyModuleManifest(installation.manifest, true);
+          }
+        }
+      }
+      return result;
+    }
+    case "UPDATE_MANAGED_SITE":
+      assertExtensionPageSender(sender);
+      return managedSites.updateSite(message.siteId, message.patch);
+    case "UPDATE_SITE_TARGET":
+      assertExtensionPageSender(sender);
+      return managedSites.updateTarget(message.targetId, message.patch);
+    case "REMOVE_MANAGED_SITE":
+      assertExtensionPageSender(sender);
+      return managedSites.remove(message.siteId);
+    case "GET_SITE_MODULES":
+      assertExtensionPageSender(sender);
+      return modules.get();
+    case "INSTALL_SITE_MODULE":
+      assertExtensionPageSender(sender);
+      {
+        const store = await modules.install(message.manifest, message.source);
+        const installation = store.installations[message.manifest.id];
+        if (!installation) throw new Error("Site module manifest was rejected");
+        await managedSites.applyModuleManifest(installation.manifest, true);
+        return store;
+      }
+    case "SET_SITE_MODULE_ENABLED": {
+      assertExtensionPageSender(sender);
+      const store = await modules.get();
+      const installation = store.installations[message.moduleId];
+      if (!installation) throw new Error("Site module is not installed");
+      await managedSites.applyModuleManifest(installation.manifest, message.enabled);
+      return modules.setEnabled(message.moduleId, message.enabled);
+    }
+    case "UNINSTALL_SITE_MODULE": {
+      assertExtensionPageSender(sender);
+      const store = await modules.get();
+      const installation = store.installations[message.moduleId];
+      if (installation) await managedSites.applyModuleManifest(installation.manifest, false);
+      return modules.uninstall(message.moduleId);
+    }
     case "GET_TRACKING_STATUS":
       await tracker.flush();
       return tracker.getStatus();
@@ -116,23 +189,28 @@ export async function handleMessage(
       assertExtensionPageSender(sender);
       return plan.start(message.id);
     case "GET_PLAN_NAVIGATION_DECISION":
-      return plan.decideNavigation(message.bvid);
+      if (sender?.tab) {
+        if (!message.url) throw new Error("Website plan checks require their current URL");
+        await assertAuthorizedConfiguredUrl(message.url, undefined, sender);
+      }
+      return plan.decideNavigation(message.url, message.bvid);
     case "IMPORT_PLAN_ITEMS":
       assertExtensionPageSender(sender);
       return plan.importItems(message.items, message.source);
-    case "SESSION_UPDATE":
-      if (!sender?.tab || !isBilibiliUrl(sender.url ?? sender.tab.url)) {
-        throw new Error("Session updates are accepted only from Bilibili content scripts");
-      }
+    case "SESSION_UPDATE": {
+      if (!sender?.tab) throw new Error("Session updates require a website tab");
+      const resolved = await assertAuthorizedConfiguredUrl(message.url, message.targetId, sender);
       return {
         accepted: tracker.handleSessionUpdate(
           sender.tab,
           message.event,
           message.sessionId,
           message.url,
-          message.visibility
+          message.visibility,
+          resolved.target.id
         )
       };
+    }
     default:
       return assertNever(message);
   }
@@ -150,7 +228,7 @@ function assertExtensionPageSender(sender?: ExtensionMessageSender): void {
 function isTrustedSender(sender: ExtensionMessageSender): boolean {
   if (api?.runtime.id && sender.id && sender.id !== api.runtime.id) return false;
   if (isExtensionPageSender(sender)) return true;
-  if (sender.tab) return isBilibiliUrl(sender.url ?? sender.tab.url);
+  if (sender.tab) return isHttpUrl(sender.url ?? sender.tab.url);
   return sender.id === api?.runtime.id;
 }
 
@@ -160,7 +238,21 @@ function isExtensionPageSender(sender: ExtensionMessageSender): boolean {
 }
 
 function assertUrl(url: unknown): asserts url is string {
-  if (typeof url !== "string" || url.length > 4_096) throw new Error("Invalid URL");
+  if (!isHttpUrl(url)) throw new Error("Invalid URL");
+}
+
+async function assertAuthorizedConfiguredUrl(
+  url: string,
+  targetId: string | undefined,
+  sender?: ExtensionMessageSender
+) {
+  const senderUrl = sender?.url ?? sender?.tab?.url;
+  if (sender?.tab && (!senderUrl || !sameOrigin(senderUrl, url))) {
+    throw new Error("Website messages cannot cross origins");
+  }
+  const resolved = await managedSites.resolve(url, targetId, true);
+  if (!resolved) throw new Error("Website is not configured or its permission is missing");
+  return resolved;
 }
 
 function assertPeriod(period: unknown): asserts period is UsagePeriod {

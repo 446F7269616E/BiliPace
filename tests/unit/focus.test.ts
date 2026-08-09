@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AnalyticsService } from "../../src/shared/analytics";
 import type { ExtensionApi, StorageAreaLike } from "../../src/shared/browser";
+import { createDefaultSettings } from "../../src/shared/config";
 import { FocusDecisionService } from "../../src/shared/focus";
 import {
   RawUsageRepository,
@@ -26,8 +27,11 @@ const storage = new MemoryStorage();
 let settings: SettingsRepository;
 let analytics: AnalyticsService;
 let decisions: FocusDecisionService;
+const siteId = "site:test";
+const targetId = "target:test";
+const managedUrl = "https://example.com/focus";
 
-beforeEach(() => {
+beforeEach(async () => {
   for (const key of Object.keys(storage.values)) delete storage.values[key];
   (globalThis as typeof globalThis & { browser?: ExtensionApi }).browser = {
     runtime: { sendMessage: () => Promise.resolve(), onMessage: { addListener: () => undefined } },
@@ -36,6 +40,33 @@ beforeEach(() => {
   settings = new SettingsRepository(storage);
   analytics = new AnalyticsService(new RawUsageRepository(storage));
   decisions = new FocusDecisionService(settings, new TemporaryAccessRepository(storage), analytics);
+  const defaults = createDefaultSettings();
+  await settings.set({
+    ...defaults,
+    sites: {
+      [siteId]: {
+        id: siteId,
+        origin: "https://example.com",
+        hostname: "example.com",
+        label: "Example",
+        enabled: true,
+        targetIds: [targetId],
+        createdAt: 1,
+        updatedAt: 1
+      }
+    },
+    targets: {
+      [targetId]: {
+        id: targetId,
+        siteId,
+        label: "Example",
+        enabled: true,
+        dailyLimitMinutes: null,
+        schedules: [],
+        temporaryAccess: { enabled: true, durationMinutes: 5, maxUsesPerDay: 3 }
+      }
+    }
+  });
 });
 
 afterEach(() => {
@@ -45,25 +76,20 @@ afterEach(() => {
 describe("focus decisions", () => {
   it("uses a quota-only rule when a daily limit is set without schedules", async () => {
     const now = new Date(2026, 7, 6, 12);
-    await settings.update({
-      sectionRules: { video: { enabled: true, dailyLimitMinutes: 1, schedules: [] } }
-    });
-    expect((await decisions.decide("https://www.bilibili.com/video/BV1test", now)).blocked).toBe(
-      false
-    );
+    await settings.update({ targets: { [targetId]: { dailyLimitMinutes: 1 } } });
+    expect((await decisions.decide(managedUrl, now)).blocked).toBe(false);
 
-    await analytics.recordInterval("video", now.getTime() - 60_000, now.getTime());
-    const limited = await decisions.decide("https://www.bilibili.com/video/BV1test", now);
+    await analytics.recordInterval(targetId, now.getTime() - 60_000, now.getTime());
+    const limited = await decisions.decide(managedUrl, now);
     expect(limited).toMatchObject({ blocked: true, reason: "daily-limit" });
   });
 
   it("persists a scoped temporary allowance with a bounded daily use count", async () => {
     const now = new Date(2026, 7, 6, 9);
     await settings.update({
-      temporaryAccess: { enabled: true, durationMinutes: 5, maxUsesPerDay: 1 }
+      targets: { [targetId]: { temporaryAccess: { maxUsesPerDay: 1 } } }
     });
-    const url = "https://www.bilibili.com/";
-    const granted = await decisions.grant(url, now);
+    const granted = await decisions.grant(managedUrl, now);
     expect(granted).toMatchObject({
       blocked: false,
       reason: "temporary-access",
@@ -72,13 +98,13 @@ describe("focus decisions", () => {
     expect(granted.temporaryAccessExpiresAt).toBe(now.getTime() + 5 * 60_000);
 
     const later = new Date(now.getTime() + 6 * 60_000);
-    const expired = await decisions.decide(url, later);
+    const expired = await decisions.decide(managedUrl, later);
     expect(expired).toMatchObject({ blocked: true, canRequestTemporaryAccess: false });
   });
 
   it("lets the master switch bypass every managed rule without losing it", async () => {
     await settings.update({ enabled: false });
-    expect(await decisions.decide("https://www.bilibili.com/", new Date())).toMatchObject({
+    expect(await decisions.decide(managedUrl, new Date())).toMatchObject({
       blocked: false,
       reason: "focus-disabled"
     });
@@ -87,9 +113,8 @@ describe("focus decisions", () => {
   it("lets explicit time rules take precedence over the daily limit", async () => {
     const monday = new Date(2026, 7, 3, 12);
     await settings.update({
-      sectionRules: {
-        video: {
-          enabled: true,
+      targets: {
+        [targetId]: {
           dailyLimitMinutes: 1,
           schedules: [
             {
@@ -105,14 +130,15 @@ describe("focus decisions", () => {
         }
       }
     });
-    await analytics.recordInterval("video", monday.getTime() - 60_000, monday.getTime());
+    await analytics.recordInterval(targetId, monday.getTime() - 60_000, monday.getTime());
 
-    expect(await decisions.decide("https://www.bilibili.com/video/BV1test", monday)).toMatchObject({
+    expect(await decisions.decide(managedUrl, monday)).toMatchObject({
       blocked: false,
       reason: "outside-schedule"
     });
-    expect(
-      await decisions.decide("https://www.bilibili.com/video/BV1test", new Date(2026, 7, 3, 15))
-    ).toMatchObject({ blocked: true, reason: "blocked" });
+    expect(await decisions.decide(managedUrl, new Date(2026, 7, 3, 15))).toMatchObject({
+      blocked: true,
+      reason: "blocked"
+    });
   });
 });

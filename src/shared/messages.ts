@@ -8,12 +8,17 @@ import type {
   PlanItemSource,
   PlanNavigationDecision,
   PlanState,
+  ManagedSite,
+  SiteModuleManifest,
+  SiteModuleSource,
+  SiteModuleStore,
+  SiteTargetSettings,
+  TargetId,
   TrackingStatus,
   UsagePeriod,
   UsageSummary
 } from "./types";
 import {
-  isBvid,
   isPlanId,
   isPlanItemSource,
   MAX_PLAN_IMPORT_ITEMS,
@@ -33,8 +38,38 @@ export interface MessageContract {
     response: UsageSummary;
   };
   CLEAR_USAGE: { request: Record<never, unknown>; response: { cleared: true } };
-  GET_PAGE_DECISION: { request: { url: string }; response: PageDecision };
-  GRANT_TEMPORARY_ACCESS: { request: { url: string }; response: PageDecision };
+  GET_PAGE_DECISION: { request: { url: string; targetId?: TargetId }; response: PageDecision };
+  GRANT_TEMPORARY_ACCESS: { request: { url: string; targetId?: TargetId }; response: PageDecision };
+  GET_MANAGED_SITES: {
+    request: Record<never, unknown>;
+    response: { sites: Record<string, ManagedSite>; targets: Record<string, SiteTargetSettings> };
+  };
+  ADD_MANAGED_SITE: {
+    request: { url: string; label?: string };
+    response: { granted: boolean; origin: string; site?: ManagedSite; target?: SiteTargetSettings };
+  };
+  UPDATE_MANAGED_SITE: {
+    request: { siteId: string; patch: { label?: string; enabled?: boolean } };
+    response: ManagedSite;
+  };
+  UPDATE_SITE_TARGET: {
+    request: { targetId: string; patch: Partial<SiteTargetSettings> };
+    response: SiteTargetSettings;
+  };
+  REMOVE_MANAGED_SITE: {
+    request: { siteId: string };
+    response: { removed: true; permissionRemoved: boolean };
+  };
+  GET_SITE_MODULES: { request: Record<never, unknown>; response: SiteModuleStore };
+  INSTALL_SITE_MODULE: {
+    request: { manifest: SiteModuleManifest; source: SiteModuleSource };
+    response: SiteModuleStore;
+  };
+  SET_SITE_MODULE_ENABLED: {
+    request: { moduleId: string; enabled: boolean };
+    response: SiteModuleStore;
+  };
+  UNINSTALL_SITE_MODULE: { request: { moduleId: string }; response: SiteModuleStore };
   GET_TRACKING_STATUS: { request: Record<never, unknown>; response: TrackingStatus };
   GET_PLAN_STATE: { request: Record<never, unknown>; response: PlanState };
   SET_PLAN_MODE: {
@@ -61,7 +96,7 @@ export interface MessageContract {
     response: { state: PlanState; url: string; expiresAt: number };
   };
   GET_PLAN_NAVIGATION_DECISION: {
-    request: { bvid?: string };
+    request: { url?: string; bvid?: string };
     response: PlanNavigationDecision;
   };
   IMPORT_PLAN_ITEMS: {
@@ -73,6 +108,7 @@ export interface MessageContract {
       event: SessionEvent;
       sessionId: string;
       url: string;
+      targetId?: TargetId;
       visibility: "visible" | "hidden";
     };
     response: { accepted: boolean };
@@ -112,7 +148,7 @@ export async function sendRequest<K extends MessageType>(
     payload
   } satisfies WireRequest);
   if (!response || response.version !== 1 || response.requestId !== requestId) {
-    throw new Error("BiliPace background returned an invalid response");
+    throw new Error("Hourleaf background returned an invalid response");
   }
   if (!response.result.ok) throw new Error(response.result.error.message);
   return response.result.data;
@@ -150,6 +186,10 @@ export function parseMessageRequest(
     case "GET_PLAN_STATE":
       request = { type: "GET_PLAN_STATE" };
       break;
+    case "GET_MANAGED_SITES":
+    case "GET_SITE_MODULES":
+      request = { type: value.type };
+      break;
     case "UPDATE_SETTINGS":
       if (!isRecord(payload.patch) || !isBoundedJson(payload.patch)) return null;
       request = { type: value.type, patch: payload.patch };
@@ -166,8 +206,82 @@ export function parseMessageRequest(
       break;
     case "GET_PAGE_DECISION":
     case "GRANT_TEMPORARY_ACCESS":
-      if (!isBilibiliUrl(payload.url)) return null;
-      request = { type: value.type, url: payload.url };
+      if (
+        !isHttpUrl(payload.url) ||
+        (payload.targetId !== undefined && !isOpaqueId(payload.targetId))
+      )
+        return null;
+      request = {
+        type: value.type,
+        url: payload.url,
+        ...(isOpaqueId(payload.targetId) ? { targetId: payload.targetId } : {})
+      };
+      break;
+    case "ADD_MANAGED_SITE":
+      if (!isHttpUrl(payload.url) || (payload.label !== undefined && !isLabel(payload.label)))
+        return null;
+      request = {
+        type: value.type,
+        url: payload.url,
+        ...(typeof payload.label === "string" ? { label: payload.label } : {})
+      };
+      break;
+    case "UPDATE_MANAGED_SITE":
+      if (
+        !isOpaqueId(payload.siteId) ||
+        !isRecord(payload.patch) ||
+        !hasOnlyKeys(payload.patch, ["label", "enabled"])
+      )
+        return null;
+      if (payload.patch.label !== undefined && !isLabel(payload.patch.label)) return null;
+      if (payload.patch.enabled !== undefined && typeof payload.patch.enabled !== "boolean")
+        return null;
+      request = { type: value.type, siteId: payload.siteId, patch: payload.patch };
+      break;
+    case "UPDATE_SITE_TARGET":
+      if (
+        !isOpaqueId(payload.targetId) ||
+        !isRecord(payload.patch) ||
+        !hasOnlyKeys(payload.patch, [
+          "label",
+          "enabled",
+          "dailyLimitMinutes",
+          "schedules",
+          "temporaryAccess"
+        ]) ||
+        !isBoundedJson(payload.patch)
+      )
+        return null;
+      request = {
+        type: value.type,
+        targetId: payload.targetId,
+        patch: payload.patch
+      };
+      break;
+    case "REMOVE_MANAGED_SITE":
+      if (!isOpaqueId(payload.siteId)) return null;
+      request = { type: value.type, siteId: payload.siteId };
+      break;
+    case "INSTALL_SITE_MODULE":
+      if (
+        !isRecord(payload.manifest) ||
+        (payload.source !== "bundled" && payload.source !== "store") ||
+        !isBoundedJson(payload.manifest)
+      )
+        return null;
+      request = {
+        type: value.type,
+        manifest: payload.manifest as unknown as SiteModuleManifest,
+        source: payload.source
+      };
+      break;
+    case "SET_SITE_MODULE_ENABLED":
+      if (!isOpaqueId(payload.moduleId) || typeof payload.enabled !== "boolean") return null;
+      request = { type: value.type, moduleId: payload.moduleId, enabled: payload.enabled };
+      break;
+    case "UNINSTALL_SITE_MODULE":
+      if (!isOpaqueId(payload.moduleId)) return null;
+      request = { type: value.type, moduleId: payload.moduleId };
       break;
     case "SET_PLAN_MODE": {
       if (!hasOnlyKeys(payload, ["enabled", "watchDurationMinutes"])) return null;
@@ -238,11 +352,13 @@ export function parseMessageRequest(
       request = { type: value.type, id: payload.id, completed: payload.completed };
       break;
     case "GET_PLAN_NAVIGATION_DECISION":
-      if (!hasOnlyKeys(payload, ["bvid"])) return null;
-      if (payload.bvid !== undefined && !isBvid(payload.bvid)) return null;
+      if (!hasOnlyKeys(payload, ["url", "bvid"])) return null;
+      if (payload.url !== undefined && !isHttpUrl(payload.url)) return null;
+      if (payload.bvid !== undefined && !isLegacyIdentity(payload.bvid)) return null;
       request = {
         type: value.type,
-        ...(isBvid(payload.bvid) ? { bvid: payload.bvid } : {})
+        ...(typeof payload.url === "string" ? { url: payload.url } : {}),
+        ...(isLegacyIdentity(payload.bvid) ? { bvid: payload.bvid } : {})
       };
       break;
     case "IMPORT_PLAN_ITEMS": {
@@ -274,7 +390,8 @@ export function parseMessageRequest(
         typeof payload.sessionId !== "string" ||
         payload.sessionId.length < 8 ||
         payload.sessionId.length > 100 ||
-        !isBilibiliUrl(payload.url) ||
+        !isHttpUrl(payload.url) ||
+        (payload.targetId !== undefined && !isOpaqueId(payload.targetId)) ||
         (payload.visibility !== "visible" && payload.visibility !== "hidden")
       ) {
         return null;
@@ -284,6 +401,7 @@ export function parseMessageRequest(
         event: payload.event,
         sessionId: payload.sessionId,
         url: payload.url,
+        ...(isOpaqueId(payload.targetId) ? { targetId: payload.targetId } : {}),
         visibility: payload.visibility
       };
       break;
@@ -293,15 +411,20 @@ export function parseMessageRequest(
   return { requestId: value.requestId, request };
 }
 
-export function isBilibiliUrl(value: unknown): value is string {
+export function isHttpUrl(value: unknown): value is string {
   if (typeof value !== "string" || value.length > 4_096) return false;
   try {
     const url = new URL(value);
-    return url.protocol === "https:" && /(^|\.)bilibili\.com$/i.test(url.hostname);
+    return (
+      (url.protocol === "http:" || url.protocol === "https:") && !url.username && !url.password
+    );
   } catch {
     return false;
   }
 }
+
+/** @deprecated Use isHttpUrl and authorize against configured origins in background. */
+export const isBilibiliUrl = isHttpUrl;
 
 function createRequestId(): string {
   if (typeof globalThis.crypto?.randomUUID === "function") return globalThis.crypto.randomUUID();
@@ -327,7 +450,7 @@ function parsePlanItemPatch(value: Record<string, unknown>): PlanItemPatch | nul
     (value.title !== undefined &&
       (typeof value.title !== "string" || value.title.length > MAX_PLAN_TITLE_LENGTH)) ||
     (value.url !== undefined && typeof value.url !== "string") ||
-    (value.bvid !== undefined && !isBvid(value.bvid)) ||
+    (value.bvid !== undefined && !isLegacyIdentity(value.bvid)) ||
     (value.source !== undefined && !isPlanItemSource(value.source))
   ) {
     return null;
@@ -335,14 +458,14 @@ function parsePlanItemPatch(value: Record<string, unknown>): PlanItemPatch | nul
   if (value.url !== undefined || value.bvid !== undefined) {
     const identity = normalizePlanItemInput({
       ...(typeof value.url === "string" ? { url: value.url } : {}),
-      ...(isBvid(value.bvid) ? { bvid: value.bvid } : {})
+      ...(isLegacyIdentity(value.bvid) ? { bvid: value.bvid } : {})
     });
     if (!identity) return null;
   }
   return {
     ...(typeof value.title === "string" ? { title: value.title } : {}),
     ...(typeof value.url === "string" ? { url: value.url } : {}),
-    ...(isBvid(value.bvid) ? { bvid: value.bvid } : {}),
+    ...(isLegacyIdentity(value.bvid) ? { bvid: value.bvid } : {}),
     ...(isPlanItemSource(value.source) ? { source: value.source } : {})
   };
 }
@@ -364,6 +487,20 @@ function isBoundedJson(value: unknown, depth = 0): boolean {
   }
   if (!isRecord(value) || Object.keys(value).length > 100) return false;
   return Object.values(value).every((item) => isBoundedJson(item, depth + 1));
+}
+
+function isOpaqueId(value: unknown): value is string {
+  return (
+    typeof value === "string" && value.length <= 128 && /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value)
+  );
+}
+
+function isLabel(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0 && value.length <= 80;
+}
+
+function isLegacyIdentity(value: unknown): value is string {
+  return typeof value === "string" && value.length >= 1 && value.length <= 100;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

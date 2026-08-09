@@ -43,7 +43,7 @@ jobs:
       - name: Upload browser artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: bilipace-browser-builds
+          name: hourleaf-browser-builds
           path: |
             dist/chromium
             dist/firefox

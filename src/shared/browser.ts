@@ -75,6 +75,37 @@ export interface ExtensionApi {
     queryState?(seconds: number, callback?: (state: "active" | "idle" | "locked") => void): unknown;
     onStateChanged?: ExtensionEvent<(state: "active" | "idle" | "locked") => void>;
   };
+  permissions?: {
+    contains?(
+      permissions: { origins?: string[]; permissions?: string[] },
+      callback?: (result: boolean) => void
+    ): unknown;
+    request?(
+      permissions: { origins?: string[]; permissions?: string[] },
+      callback?: (granted: boolean) => void
+    ): unknown;
+    remove?(
+      permissions: { origins?: string[]; permissions?: string[] },
+      callback?: (removed: boolean) => void
+    ): unknown;
+  };
+  scripting?: {
+    registerContentScripts?(
+      scripts: Array<{
+        id: string;
+        matches: string[];
+        js: string[];
+        runAt?: "document_start" | "document_end" | "document_idle";
+        persistAcrossSessions?: boolean;
+      }>,
+      callback?: () => void
+    ): unknown;
+    unregisterContentScripts?(filter?: { ids?: string[] }, callback?: () => void): unknown;
+    getRegisteredContentScripts?(
+      filter?: { ids?: string[] },
+      callback?: (scripts: Array<{ id: string; matches?: string[] }>) => void
+    ): unknown;
+  };
 }
 
 type ApiMode = "promise" | "callback";
@@ -212,6 +243,90 @@ export async function idleQueryState(
   return callbackResult<"active" | "idle" | "locked">((resolve) =>
     idle.queryState?.(detectionIntervalSeconds, resolve)
   );
+}
+
+export async function permissionsContains(origins: string[]): Promise<boolean> {
+  const context = requireContext();
+  const permissions = context.api.permissions;
+  if (!permissions?.contains) return false;
+  if (context.mode === "promise") {
+    return Boolean(await permissions.contains({ origins }));
+  }
+  return callbackResult<boolean>((resolve) => permissions.contains?.({ origins }, resolve));
+}
+
+/** Must be called directly from an extension-page user gesture. */
+export async function permissionsRequest(origins: string[]): Promise<boolean> {
+  const context = requireContext();
+  const permissions = context.api.permissions;
+  if (!permissions?.request) return false;
+  if (context.mode === "promise") {
+    return Boolean(await permissions.request({ origins }));
+  }
+  return callbackResult<boolean>((resolve) => permissions.request?.({ origins }, resolve));
+}
+
+export async function permissionsRemove(origins: string[]): Promise<boolean> {
+  const context = requireContext();
+  const permissions = context.api.permissions;
+  if (!permissions?.remove) return false;
+  if (context.mode === "promise") {
+    return Boolean(await permissions.remove({ origins }));
+  }
+  return callbackResult<boolean>((resolve) => permissions.remove?.({ origins }, resolve));
+}
+
+export async function scriptingRegisterContentScript(
+  id: string,
+  matches: string[],
+  js = "content.js"
+): Promise<void> {
+  const context = requireContext();
+  const scripting = context.api.scripting;
+  if (!scripting?.registerContentScripts) {
+    throw new Error("Dynamic content script registration is unavailable");
+  }
+  const scripts = [
+    {
+      id,
+      matches,
+      js: [js],
+      runAt: "document_start" as const,
+      persistAcrossSessions: true
+    }
+  ];
+  if (context.mode === "promise") {
+    await scripting.registerContentScripts(scripts);
+    return;
+  }
+  await callbackVoid((resolve) => scripting.registerContentScripts?.(scripts, resolve));
+}
+
+export async function scriptingUnregisterContentScripts(ids?: string[]): Promise<void> {
+  const context = requireContext();
+  const scripting = context.api.scripting;
+  if (!scripting?.unregisterContentScripts) return;
+  const filter = ids ? { ids } : undefined;
+  if (context.mode === "promise") {
+    await scripting.unregisterContentScripts(filter);
+    return;
+  }
+  await callbackVoid((resolve) => scripting.unregisterContentScripts?.(filter, resolve));
+}
+
+export async function scriptingGetRegisteredContentScripts(): Promise<
+  Array<{ id: string; matches?: string[] }>
+> {
+  const context = requireContext();
+  const scripting = context.api.scripting;
+  if (!scripting?.getRegisteredContentScripts) return [];
+  if (context.mode === "promise") {
+    return (await scripting.getRegisteredContentScripts({})) as Array<{
+      id: string;
+      matches?: string[];
+    }>;
+  }
+  return callbackResult((resolve) => scripting.getRegisteredContentScripts?.({}, resolve));
 }
 
 function requireApi(): ExtensionApi {

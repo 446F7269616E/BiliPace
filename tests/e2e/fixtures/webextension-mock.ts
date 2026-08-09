@@ -1,8 +1,35 @@
 import type { BrowserContext } from "@playwright/test";
 
 export interface MockSettings {
-  schemaVersion: 2;
+  schemaVersion: 3;
   enabled: boolean;
+  sites: Record<
+    string,
+    {
+      id: string;
+      origin: string;
+      hostname: string;
+      label: string;
+      enabled: boolean;
+      targetIds: string[];
+      createdAt: number;
+      updatedAt: number;
+    }
+  >;
+  targets: Record<
+    string,
+    {
+      id: string;
+      siteId: string;
+      label: string;
+      enabled: boolean;
+      dailyLimitMinutes: number | null;
+      schedules: unknown[];
+      temporaryAccess: { enabled: boolean; durationMinutes: number; maxUsesPerDay: number };
+      moduleId?: string;
+      moduleSectionId?: string;
+    }
+  >;
   sectionRules: Record<
     string,
     { enabled: boolean; dailyLimitMinutes: number | null; schedules: unknown[] }
@@ -18,8 +45,44 @@ export interface MockSettings {
 }
 
 const initialSettings: MockSettings = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   enabled: true,
+  sites: {
+    "site:bilibili": {
+      id: "site:bilibili",
+      origin: "https://www.bilibili.com",
+      hostname: "www.bilibili.com",
+      label: "哔哩哔哩",
+      enabled: true,
+      targetIds: [
+        "module:bilibili:home",
+        "module:bilibili:dynamic",
+        "module:bilibili:popular",
+        "module:bilibili:video",
+        "module:bilibili:live",
+        "module:bilibili:bangumi",
+        "module:bilibili:search"
+      ],
+      createdAt: 1,
+      updatedAt: 1
+    }
+  },
+  targets: Object.fromEntries(
+    ["home", "dynamic", "popular", "video", "live", "bangumi", "search"].map((section) => [
+      `module:bilibili:${section}`,
+      {
+        id: `module:bilibili:${section}`,
+        siteId: "site:bilibili",
+        label: section,
+        enabled: ["home", "dynamic", "popular"].includes(section),
+        dailyLimitMinutes: null,
+        schedules: [],
+        temporaryAccess: { enabled: true, durationMinutes: 5, maxUsesPerDay: 3 },
+        moduleId: "hourleaf.site.bilibili",
+        moduleSectionId: section
+      }
+    ])
+  ),
   sectionRules: {
     home: { enabled: true, dailyLimitMinutes: null, schedules: [] },
     dynamic: { enabled: true, dailyLimitMinutes: null, schedules: [] },
@@ -103,6 +166,10 @@ export async function installWebExtensionMock(context: BrowserContext): Promise<
           period?: string;
           enabled?: boolean;
           watchDurationMinutes?: number;
+          url?: string;
+          siteId?: string;
+          moduleId?: string;
+          action?: string;
         };
       }) {
         let result: unknown;
@@ -110,6 +177,12 @@ export async function installWebExtensionMock(context: BrowserContext): Promise<
         switch (message.type) {
           case "GET_SETTINGS":
             result = ok(settings);
+            break;
+          case "GET_SITE_MODULES":
+            result = ok({
+              schemaVersion: 1,
+              installations: {}
+            });
             break;
           case "UPDATE_SETTINGS":
             settings = {
@@ -147,6 +220,11 @@ export async function installWebExtensionMock(context: BrowserContext): Promise<
               startDate: "2026-08-06",
               endDate: "2026-08-06",
               totalSeconds: 5_400,
+              byTarget: {
+                "module:bilibili:home": 600,
+                "module:bilibili:dynamic": 900,
+                "module:bilibili:bangumi": 3_900
+              },
               bySection: {
                 home: 600,
                 dynamic: 900,
@@ -159,6 +237,11 @@ export async function installWebExtensionMock(context: BrowserContext): Promise<
               byDay: [
                 {
                   date: "2026-08-06",
+                  byTarget: {
+                    "module:bilibili:home": 600,
+                    "module:bilibili:dynamic": 900,
+                    "module:bilibili:bangumi": 3_900
+                  },
                   bySection: {
                     home: 600,
                     dynamic: 900,
@@ -225,6 +308,14 @@ export async function installWebExtensionMock(context: BrowserContext): Promise<
             return Promise.resolve([
               { id: 1, active: true, windowId: 1, url: "https://www.bilibili.com/" }
             ]);
+          }
+        },
+        permissions: {
+          contains() {
+            return Promise.resolve(true);
+          },
+          request() {
+            return Promise.resolve(true);
           }
         },
         idle: {

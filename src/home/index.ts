@@ -1,10 +1,26 @@
 import { sendRequest } from "../shared/messages";
-import type { DeepPartial, FocusSettings } from "../shared/types";
+import type { DeepPartial, FocusSettings, ManagedSite, SiteModuleStore } from "../shared/types";
 import { assertAppRoot, describeError, element, setButtonBusy, toast } from "../styles/dom";
 import { createPageNavigation } from "../ui/page-navigation";
+import {
+  addBilibiliModuleSites,
+  addManagedSite,
+  getSiteModules,
+  hasWebsitePermission,
+  isBilibiliModuleBundled,
+  normalizeWebsiteInput,
+  openBilibiliModuleDownload,
+  removeManagedSite,
+  requestBilibiliModulePermissions,
+  requestWebsitePermission,
+  setSiteModuleState,
+  updateManagedSite
+} from "../ui/site-management";
 
 const app = assertAppRoot();
 let settings: FocusSettings | null = null;
+let modules: SiteModuleStore | null = null;
+const BILIBILI_MODULE_ID = "hourleaf.site.bilibili";
 
 document.body.classList.add("home-page");
 void loadSettings();
@@ -12,7 +28,10 @@ void loadSettings();
 async function loadSettings(): Promise<void> {
   renderLoading();
   try {
-    settings = await sendRequest({ type: "GET_SETTINGS" });
+    [settings, modules] = await Promise.all([
+      sendRequest({ type: "GET_SETTINGS" }),
+      getSiteModules()
+    ]);
     renderSettings();
   } catch (error) {
     renderError(describeError(error));
@@ -62,7 +81,7 @@ function renderSettings(): void {
     settings.planMode.watchDurationMinutes,
     1,
     360,
-    "单次观看分钟数"
+    "单次访问分钟数"
   );
   watchDuration.disabled = !settings.planMode.enabled;
   planToggle.input.addEventListener("change", () => {
@@ -71,44 +90,6 @@ function renderSettings(): void {
   watchDuration.addEventListener("change", () => {
     const value = clampInput(watchDuration, 1, 360);
     void updatePlanMode({ watchDurationMinutes: value }, watchDuration);
-  });
-
-  const accessToggle = createToggle(
-    "临时访问",
-    settings.temporaryAccess.enabled,
-    "settings-access-toggle"
-  );
-  const accessDuration = createNumberInput(
-    settings.temporaryAccess.durationMinutes,
-    1,
-    60,
-    "每次临时访问分钟数"
-  );
-  const accessUses = createNumberInput(
-    settings.temporaryAccess.maxUsesPerDay,
-    0,
-    50,
-    "每天临时访问次数"
-  );
-  accessDuration.disabled = !settings.temporaryAccess.enabled;
-  accessUses.disabled = !settings.temporaryAccess.enabled;
-  accessToggle.input.addEventListener("change", () => {
-    void updateSettings(
-      { temporaryAccess: { enabled: accessToggle.input.checked } },
-      accessToggle.input
-    );
-  });
-  accessDuration.addEventListener("change", () => {
-    void updateSettings(
-      { temporaryAccess: { durationMinutes: clampInput(accessDuration, 1, 60) } },
-      accessDuration
-    );
-  });
-  accessUses.addEventListener("change", () => {
-    void updateSettings(
-      { temporaryAccess: { maxUsesPerDay: clampInput(accessUses, 0, 50) } },
-      accessUses
-    );
   });
 
   const clearUsage = element("button", {
@@ -154,15 +135,12 @@ function renderSettings(): void {
       element("div", {
         className: "home-settings",
         children: [
+          createWebsitesCard(),
+          createModulesCard(),
           createSettingsCard("专注", [createSettingRow("专注保护", focusToggle.label)]),
           createSettingsCard("计划", [
             createSettingRow("计划模式", planToggle.label),
-            createNumberRow("单次观看", watchDuration, "分钟")
-          ]),
-          createSettingsCard("临时访问", [
-            createSettingRow("允许临时访问", accessToggle.label),
-            createNumberRow("每次时长", accessDuration, "分钟"),
-            createNumberRow("每日次数", accessUses, "次")
+            createNumberRow("单次访问", watchDuration, "分钟")
           ]),
           createSettingsCard("数据", [
             element("div", {
@@ -176,6 +154,244 @@ function renderSettings(): void {
   });
 
   app.replaceChildren(createShell(content));
+  void refreshPermissionBadges();
+}
+
+function createWebsitesCard(): HTMLElement {
+  const sites = settings
+    ? Object.values(settings.sites).sort((left, right) => left.label.localeCompare(right.label))
+    : [];
+  const input = element("input", {
+    className: "input home-site-add__input",
+    attrs: {
+      type: "text",
+      inputmode: "url",
+      autocomplete: "url",
+      placeholder: "example.com",
+      "aria-label": "网站域名或网址",
+      "data-testid": "site-add-input"
+    }
+  });
+  const addButton = element("button", {
+    className: "btn btn--primary",
+    text: "添加网站",
+    attrs: { type: "button", "data-testid": "site-add-button" }
+  });
+  addButton.addEventListener("click", () => {
+    void addSiteFromInput(input, addButton);
+  });
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      addButton.click();
+    }
+  });
+  return element("section", {
+    className: "home-settings__card card home-sites",
+    attrs: { "aria-labelledby": "managed-sites-title" },
+    children: [
+      element("div", {
+        className: "home-settings__card-heading",
+        children: [
+          element("h2", { text: "网站", attrs: { id: "managed-sites-title" } }),
+          element("span", { className: "status-chip", text: `${sites.length} 个` })
+        ]
+      }),
+      element("div", {
+        className: "home-site-add",
+        children: [input, addButton]
+      }),
+      element("div", {
+        className: "home-site-list",
+        children:
+          sites.length > 0
+            ? sites.map(createSiteRow)
+            : [element("p", { className: "home-empty", text: "暂无网站" })]
+      })
+    ]
+  });
+}
+
+function createSiteRow(site: ManagedSite): HTMLElement {
+  const toggle = createToggle(
+    `${site.label || site.hostname}网站`,
+    site.enabled,
+    `site-${site.id}`
+  );
+  toggle.input.addEventListener("change", () => {
+    void setSiteEnabled(site, toggle.input.checked, toggle.input);
+  });
+  const remove = element("button", {
+    className: "btn btn--danger",
+    attrs: { type: "button", title: "删除", "aria-label": `删除${site.label || site.hostname}` },
+    children: [element("span", { text: "删除" })]
+  });
+  remove.addEventListener("click", () => {
+    openConfirmation({
+      title: `删除 ${site.label || site.hostname}？`,
+      actionLabel: "删除",
+      onConfirm: async () => {
+        await removeManagedSite(site.id);
+        toast("网站已删除");
+        await loadSettings();
+      }
+    });
+  });
+  return element("article", {
+    className: "home-site-row",
+    dataset: { siteId: site.id },
+    children: [
+      element("div", {
+        className: "home-site-row__identity",
+        children: [
+          element("strong", { text: site.label || site.hostname }),
+          element("span", { text: site.origin })
+        ]
+      }),
+      element("span", {
+        className: "status-chip home-site-row__permission",
+        text: "检查权限",
+        dataset: { permissionOrigin: `${site.origin}/*` }
+      }),
+      toggle.label,
+      remove
+    ]
+  });
+}
+
+function createModulesCard(): HTMLElement {
+  const installation = modules?.installations[BILIBILI_MODULE_ID];
+  const installed = isBilibiliModuleBundled;
+  const enabled = Boolean(isBilibiliModuleBundled && installation?.enabled);
+  const action = !installed ? "install" : enabled ? "disable" : "enable";
+  const button = element("button", {
+    className: `btn${action === "install" ? " btn--primary" : ""}`,
+    text: action === "install" ? "获取" : action === "enable" ? "启用" : "停用",
+    attrs: { type: "button", "data-testid": "bilibili-module-action" }
+  });
+  button.addEventListener("click", () => {
+    void updateModule(action, button);
+  });
+  return element("section", {
+    className: "home-settings__card card home-modules",
+    attrs: { "aria-labelledby": "modules-title" },
+    children: [
+      element("div", {
+        className: "home-settings__card-heading",
+        children: [
+          element("h2", { text: "模块", attrs: { id: "modules-title" } }),
+          element("span", { className: "status-chip", text: installed ? "已获取" : "可获取" })
+        ]
+      }),
+      element("article", {
+        className: "home-module-row",
+        children: [
+          element("div", {
+            className: "home-module-row__icon",
+            children: [element("span", { text: "哔" })]
+          }),
+          element("div", {
+            className: "home-module-row__copy",
+            children: [
+              element("strong", { text: "哔哩哔哩" }),
+              element("p", { text: "视频、动态、直播与 Ave Mujica 内容管理" }),
+              element("div", {
+                className: "home-module-row__capabilities",
+                children: ["分类", "内容过滤", "计划", "使用统计"].map((label) =>
+                  element("span", { text: label })
+                )
+              })
+            ]
+          }),
+          element("span", {
+            className: `status-chip${enabled ? " status-chip--success" : ""}`,
+            text: enabled ? "已启用" : installed ? "已停用" : "未获取"
+          }),
+          button
+        ]
+      })
+    ]
+  });
+}
+
+async function addSiteFromInput(input: HTMLInputElement, button: HTMLButtonElement): Promise<void> {
+  try {
+    const website = normalizeWebsiteInput(input.value);
+    setButtonBusy(button, true, "请求权限");
+    const granted = await requestWebsitePermission(website.permissionPattern);
+    if (!granted) {
+      toast("未获得网站权限", "error");
+      return;
+    }
+    setButtonBusy(button, true, "正在添加");
+    await addManagedSite(website.origin);
+    input.value = "";
+    toast("网站已添加");
+    await loadSettings();
+  } catch (error) {
+    toast(error instanceof Error ? error.message : describeError(error), "error");
+  } finally {
+    setButtonBusy(button, false);
+  }
+}
+
+async function setSiteEnabled(
+  site: ManagedSite,
+  enabled: boolean,
+  control: HTMLInputElement
+): Promise<void> {
+  control.disabled = true;
+  try {
+    await updateManagedSite(site.id, enabled);
+    toast(enabled ? "网站已启用" : "网站已暂停");
+    await loadSettings();
+  } catch (error) {
+    control.checked = !enabled;
+    control.disabled = false;
+    toast(describeError(error), "error");
+  }
+}
+
+async function updateModule(
+  action: "install" | "enable" | "disable",
+  button: HTMLButtonElement
+): Promise<void> {
+  setButtonBusy(button, true);
+  try {
+    if (action === "install" && !isBilibiliModuleBundled) {
+      openBilibiliModuleDownload();
+      toast("已打开模块下载页");
+      return;
+    }
+    if (action === "enable") {
+      const granted = await requestBilibiliModulePermissions();
+      if (!granted) {
+        toast("未获得网站权限", "error");
+        return;
+      }
+      await addBilibiliModuleSites();
+    }
+    await setSiteModuleState(BILIBILI_MODULE_ID, action);
+    toast(action === "install" ? "模块已获取" : action === "enable" ? "模块已启用" : "模块已停用");
+    await loadSettings();
+  } catch (error) {
+    setButtonBusy(button, false);
+    toast(describeError(error), "error");
+  }
+}
+
+async function refreshPermissionBadges(): Promise<void> {
+  const badges = document.querySelectorAll<HTMLElement>("[data-permission-origin]");
+  await Promise.all(
+    [...badges].map(async (badge) => {
+      const pattern = badge.dataset.permissionOrigin;
+      if (!pattern) return;
+      const granted = await hasWebsitePermission(pattern);
+      badge.textContent = granted === null ? "权限由浏览器管理" : granted ? "已授权" : "未授权";
+      badge.classList.toggle("status-chip--success", granted === true);
+      badge.classList.toggle("status-chip--warning", granted === false);
+    })
+  );
 }
 
 function createShell(content: HTMLElement): HTMLElement {

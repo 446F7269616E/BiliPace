@@ -1,22 +1,19 @@
-import { classifyBilibiliUrl } from "../shared/url";
 import type { ContentFilterId, ContentFilterSettings } from "../shared/types";
-import { detectSiteAdapters, type ContentRoot, type ContentSiteAdapter } from "./site-adapters";
+import type { ModuleMatch, SiteModuleRuntime } from "../modules/contracts";
+import { resolveSiteModule } from "../modules/registry";
+import {
+  collectAdapterRoots,
+  detectSiteAdapters,
+  type ContentRoot,
+  type ContentSiteAdapter
+} from "./site-adapters";
 
-const STYLE_ATTRIBUTE = "data-bilipace-content-filter-style";
-const CARD_HIDDEN_ATTRIBUTE = "data-bilipace-card-hidden";
+const STYLE_ATTRIBUTE = "data-hourleaf-content-filter-style";
+const CARD_HIDDEN_ATTRIBUTE = "data-hourleaf-card-hidden";
 const MAX_TITLE_LENGTH = 240;
-
-const ROUTE_SCOPED_FILTERS: Readonly<
-  Partial<Record<ContentFilterId, ReturnType<typeof classifyBilibiliUrl>>>
-> = {
-  "home-feed": "home",
-  "dynamic-feed": "dynamic",
-  "related-videos": "video"
-};
 
 export class ContentFilterController {
   private settings: ContentFilterSettings | null = null;
-  private url = "";
   private contentObservers: MutationObserver[] = [];
   private scanFrame: number | null = null;
   private pendingScans = new Map<ContentSiteAdapter, Set<ParentNode>>();
@@ -24,24 +21,27 @@ export class ContentFilterController {
   private applicationSignature = "";
   private keywords: string[] = [];
   private patterns: RegExp[] = [];
-  private readonly environmentTarget: EventTarget;
+  private module: SiteModuleRuntime | null = null;
+  private match: ModuleMatch | null = null;
+  private lifecycleCleanups: Array<() => void> = [];
 
   constructor(private readonly document: Document = window.document) {
-    this.environmentTarget = this.document.defaultView ?? this.document;
     this.document.addEventListener("keydown", this.handleSearchShortcut, true);
-    // Ave Mujica dispatches this event on `window`; a document listener never
-    // receives it because events do not propagate from Window down to Document.
-    this.environmentTarget.addEventListener("bewlyMounted", this.handleEnvironmentChange);
   }
 
   apply(settings: ContentFilterSettings, url: string): void {
-    const nextSignature = createApplicationSignature(settings, url);
-    const nextRoots = collectAdapterRoots(this.document);
+    const nextModule = resolveSiteModule(url);
+    const nextMatch = nextModule?.match(url) ?? null;
+    const nextSignature = createApplicationSignature(settings, nextMatch);
+    const nextRoots = collectAdapterRoots(nextModule, this.document);
     const rootsChanged = !haveSameRoots(this.knownRoots, nextRoots);
+    const moduleChanged = this.module !== nextModule;
 
     this.settings = settings;
-    this.url = url;
-    if (nextSignature === this.applicationSignature && !rootsChanged) return;
+    this.module = nextModule;
+    this.match = nextMatch;
+    if (moduleChanged) this.bindLifecycleEvents();
+    if (nextSignature === this.applicationSignature && !rootsChanged && !moduleChanged) return;
 
     this.applicationSignature = nextSignature;
     this.knownRoots = nextRoots;
@@ -52,6 +52,8 @@ export class ContentFilterController {
 
   stop(): void {
     this.settings = null;
+    this.module = null;
+    this.match = null;
     this.applicationSignature = "";
     this.knownRoots = [];
     this.disconnectContentObservers();
@@ -59,7 +61,7 @@ export class ContentFilterController {
     this.removeStyles();
     this.clearFilteredCards();
     this.document.removeEventListener("keydown", this.handleSearchShortcut, true);
-    this.environmentTarget.removeEventListener("bewlyMounted", this.handleEnvironmentChange);
+    this.clearLifecycleEvents();
   }
 
   private renderStyles(): void {
@@ -67,13 +69,13 @@ export class ContentFilterController {
     const settings = this.settings;
     if (!settings?.enabled) return;
 
-    const section = classifyBilibiliUrl(this.url);
-    for (const adapter of detectSiteAdapters(this.document)) {
+    const section = this.match?.sectionId;
+    for (const adapter of detectSiteAdapters(this.module, this.document)) {
       const selectors = Object.entries(settings.hiddenElements).flatMap(([rawId, hidden]) => {
         const id = rawId as ContentFilterId;
         if (!hidden) return [];
-        const scopedSection = ROUTE_SCOPED_FILTERS[id];
-        if (scopedSection && section !== scopedSection) return [];
+        const scopedSections = adapter.routeScopedFilters[id] ?? [];
+        if (scopedSections.length > 0 && (!section || !scopedSections.includes(section))) return [];
         return adapter.hiddenElementSelectors[id] ?? [];
       });
       const css = [...new Set([...selectors, `[${CARD_HIDDEN_ATTRIBUTE}]`])]
@@ -87,7 +89,7 @@ export class ContentFilterController {
     this.disconnectContentObservers();
     if (!this.shouldFilterVideoCards()) return;
 
-    const adapters = detectSiteAdapters(this.document);
+    const adapters = detectSiteAdapters(this.module, this.document);
     for (const adapter of adapters) {
       for (const root of adapter.roots(this.document)) {
         const observer = new MutationObserver((mutations) => {
@@ -112,11 +114,32 @@ export class ContentFilterController {
 
   private readonly handleEnvironmentChange = (): void => {
     if (!this.settings) return;
-    const nextRoots = collectAdapterRoots(this.document);
+    const nextRoots = collectAdapterRoots(this.module, this.document);
     if (haveSameRoots(this.knownRoots, nextRoots)) return;
     this.knownRoots = nextRoots;
     this.refreshEnhancements();
   };
+
+  private bindLifecycleEvents(): void {
+    this.clearLifecycleEvents();
+    const module = this.module;
+    if (!module) return;
+    for (const lifecycle of module.descriptor.lifecycle) {
+      const target: EventTarget =
+        lifecycle.target === "window"
+          ? (this.document.defaultView ?? this.document)
+          : this.document;
+      target.addEventListener(lifecycle.event, this.handleEnvironmentChange);
+      this.lifecycleCleanups.push(() =>
+        target.removeEventListener(lifecycle.event, this.handleEnvironmentChange)
+      );
+    }
+  }
+
+  private clearLifecycleEvents(): void {
+    for (const cleanup of this.lifecycleCleanups) cleanup();
+    this.lifecycleCleanups = [];
+  }
 
   private scheduleCardScan(adapter: ContentSiteAdapter, roots: ParentNode[]): void {
     const pendingRoots = this.pendingScans.get(adapter) ?? new Set<ParentNode>();
@@ -159,7 +182,7 @@ export class ContentFilterController {
     this.clearFilteredCards();
     if (!this.shouldFilterVideoCards()) return;
 
-    for (const adapter of detectSiteAdapters(this.document)) {
+    for (const adapter of detectSiteAdapters(this.module, this.document)) {
       for (const root of adapter.roots(this.document)) {
         this.filterCards(root, adapter);
       }
@@ -181,7 +204,7 @@ export class ContentFilterController {
   }
 
   private clearFilteredCards(): void {
-    for (const root of collectAdapterRoots(this.document)) {
+    for (const root of collectAdapterRoots(this.module, this.document)) {
       for (const card of root.querySelectorAll(`[${CARD_HIDDEN_ATTRIBUTE}]`)) {
         card.removeAttribute(CARD_HIDDEN_ATTRIBUTE);
       }
@@ -189,7 +212,7 @@ export class ContentFilterController {
   }
 
   private removeStyles(): void {
-    for (const root of collectAdapterRoots(this.document)) {
+    for (const root of collectAdapterRoots(this.module, this.document)) {
       for (const style of root.querySelectorAll(`style[${STYLE_ATTRIBUTE}]`)) style.remove();
     }
   }
@@ -209,7 +232,7 @@ export class ContentFilterController {
       return;
     }
 
-    for (const adapter of detectSiteAdapters(this.document)) {
+    for (const adapter of detectSiteAdapters(this.module, this.document)) {
       for (const root of adapter.roots(this.document)) {
         for (const selector of adapter.searchInputSelectors) {
           const input = root.querySelector<HTMLInputElement>(selector);
@@ -222,10 +245,6 @@ export class ContentFilterController {
       }
     }
   };
-}
-
-function collectAdapterRoots(document: Document): ContentRoot[] {
-  return [...new Set(detectSiteAdapters(document).flatMap((adapter) => adapter.roots(document)))];
 }
 
 function appendStyle(root: ContentRoot, css: string, document: Document): void {
@@ -245,8 +264,11 @@ function findCards(root: ParentNode, adapter: ContentSiteAdapter): Element[] {
   return [...cards];
 }
 
-function createApplicationSignature(settings: ContentFilterSettings, url: string): string {
-  return `${classifyBilibiliUrl(url)}\n${JSON.stringify(settings)}`;
+function createApplicationSignature(
+  settings: ContentFilterSettings,
+  match: ModuleMatch | null
+): string {
+  return `${match?.moduleId ?? ""}:${match?.targetId ?? ""}\n${JSON.stringify(settings)}`;
 }
 
 function haveSameRoots(current: ContentRoot[], next: ContentRoot[]): boolean {

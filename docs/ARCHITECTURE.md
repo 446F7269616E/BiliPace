@@ -1,137 +1,115 @@
-# BiliPace 架构与质量约束
+# Hourleaf 架构与数据契约
 
 ## 目标
 
-BiliPace 是本地优先、跨浏览器的 WebExtension。架构优先保证：准确计时、确定性计划、最小权限、可迁移数据和 Bilibili 页面变化下的可恢复性。
+Hourleaf 是本地优先、跨浏览器的网站专注扩展。核心目标是准确计时、确定执行用户规则、按需授权网站，并让站点适配可以独立演进而不进入通用内核。
 
-## 分层与依赖方向
+## 分层
 
 ```text
-popup / options / dashboard / plan
-            │
-            ▼
-     application services  ◄──── content script（只采集页面状态/渲染遮罩）
-            │
-            ▼
- domain: route / schedule / timer / statistics
-            │
-            ▼
- ports: clock / storage / alarms / runtime messaging
-            │
-            ▼
-adapters: Chromium SW / Firefox event page / Safari WebExtension
+popup / dashboard / plan / options / home
+                    │
+                    ▼
+           application services
+          ┌─────────┴─────────┐
+          ▼                   ▼
+ generic site core      reviewed site modules
+          │                   │
+          └─────────┬─────────┘
+                    ▼
+      storage / permissions / scripting / idle
+                    ▼
+     Chromium / Firefox / Safari build adapters
 ```
 
-- `domain` 必须是无浏览器全局变量的纯逻辑，时间与存储通过接口注入。
-- UI 只能调用 application service，不直接解释统计记录或计划规则。
-- content script 不持有权威统计，只报告标准化事件并渲染由应用层下发的状态。
-- 特权 background 是协调者而不是常驻进程（Chromium Service Worker、Firefox 非持久事件页、Safari 的目标环境）；重启后可从 schema 化存储恢复。
-- 平台差异封装在 adapter/build manifest 层，禁止在业务代码里按 UA 分支。
+- `src/shared` 与 `src/core` 只包含通用领域模型、消息和浏览器端口。
+- `src/background` 是可恢复的协调层，不依赖常驻 Service Worker。
+- `src/content` 只报告可见性、焦点和路由状态，并渲染核心专注界面。
+- `src/modules/<site>` 拥有站点路由、选择器、内容降噪和可选身份适配。
+- UI 只调用版本化消息，不直接读写任意 storage key。
+- 平台差异由浏览器适配层与构建 manifest 处理，业务层不按 UA 分支。
 
-## 页面分类
+## 通用网站模型
 
-页面分类器接收规范化 URL，只返回受支持的板块枚举或 `null`。板块与 URL 规则集中维护并有表驱动测试；禁止各 UI/content script 重复正则。必须覆盖 Bilibili SPA 的 `pushState`、`replaceState`、`popstate` 及站点自定义导航导致的 URL 变化。
+设置 schema v3 使用三个稳定标识：
 
-未知路由采用安全降级：不屏蔽、不计时，也不记录完整 URL。站点 DOM 选择器失效时不得把整个网站永久隐藏；应显示可退出的扩展自有遮罩或停止增强，并记录本机可诊断状态。
+- `SiteId`：用户授权的精确来源，例如 `https://example.com`；
+- `TargetId`：同一网站内可独立应用时间规则的目标；
+- `SiteModuleId`：经过审核的可选站点能力包。
 
-BewlyBewly! Ave Mujica 采用最小兼容边界：已知的 `?page=Home/Search/Anime/Moments` 映射为统一板块，未知值按未管理页面安全放行；计时、整页专注和计划模式始终只使用顶层 URL，不扫描 iframe，也不启用 `all_frames`。开放 `#bewly` ShadowRoot 由独立 site adapter 处理首页/动态视频卡片、搜索联想、顶部导航、标题规则和搜索快捷键；挂载事件监听 `window` 的 `bewlyMounted`，并按 root 引用恢复重挂载。整页遮罩位于 `documentElement`，在 Ave 重建 `body` 时恢复 inert 与遮罩状态。
+核心只保存来源与主机名，不保存普通浏览的路径、查询参数或页面标题。新增网站时必须由用户点击触发权限请求；授权模式为精确 `${origin}/*`。后台只为已启用且仍持有权限的网站注册动态 content script，启动或升级后从持久化设置重建注册状态。撤销权限或删除网站后停止计时与拦截。
 
-## 内容降噪层
+普通网站默认有一个整站目标。站点模块可以声明多个稳定目标，但不能扩展到 manifest 未声明的主机。
 
-页内内容隐藏与整页专注拦截是两层独立策略。`ContentFilterId` 是稳定领域标识，Bilibili 原生界面与兼容界面各自提供 selector profile；UI 与存储不得持有选择器。
+## 站点模块协议
 
-- 选择器失效必须安全放行，不能隐藏未知容器或整个站点。
-- 样式只在设置、板块或 root 生命周期变化时重算；只有标题规则实际启用且非空时才观察内容新增，高频信息流只增量扫描新增卡片。
-- 用户正则有长度、数量和安全形状限制；不安全或无效规则被忽略，不能阻塞页面主线程。
-- `/` 搜索快捷键尊重输入框、可编辑元素、组合输入和修饰键。
-- 设置存储变化应立即刷新已打开页面，不依赖刷新网页。
+`SiteModuleDescriptor` 是有界、可验证、可确定性序列化的声明：
 
-## 全页信息架构
+- 固定模块 ID、版本、名称、主机和能力；
+- 有限的路由与板块映射；
+- 有限的 document/open ShadowRoot 内容 profile；
+- 明确的生命周期事件和安全回退页面；
+- 可选的计划身份适配。
 
-四个全页入口采用同级结构：`dashboard.html` 为“仪表盘”，`plan.html` 为“计划”，`options.html` 为“配置”，`home.html` 为“设置”。它们使用 `src/ui/page-navigation.ts` 的固定左侧菜单，保持该顺序、同标签跳转和当前页 `aria-current`；窄屏降级为横向导航。popup 只承担快速状态与入口。
+运行时注册表只接受随构建一起审核的本地模块，不下载、`eval`、动态 `import` 或解释远程 JavaScript/Wasm。远程目录若存在，只能提供版本、下载页、权限和校验值等元数据；不能改变执行逻辑。
 
-计划页包含两种视图：纵向列表按 `addedAt` 排序；思维导图按 `order` 横向排列，拖拽或键盘移动后通过 `REORDER_PLAN_ITEMS` 持久化。视图偏好保存为扩展页本地键 `bilipace.plan.view`，不进入观看计划数据。
+发布形态：
 
-所有用户可见文本遵守 [UX_WRITING.md](./UX_WRITING.md)。UI 不直接解释后台异常、provider 状态或内部实现；调试信息只进入本机开发日志。
+- 核心构建不导入任何站点模块；
+- 模块构建通过单独 entry 注册站点模块后加载同一内容宿主；
+- 商店可发布核心版或包含已审核模块但默认停用的 bundle；
+- 设置页只能打开正常的商店/Release 获取页，不能静默安装扩展；
+- GitHub 开发包不能冒充 Windows/macOS 的普通 CRX 安装流程。
 
-## 权威计时模型
+### Bilibili 模块
 
-有效使用时间同时满足：
+`hourleaf.site.bilibili` 包含 Bilibili 与 BewlyBewly! Ave Mujica 的路由、板块和 DOM 适配。Ave 只处理开放 `#bewly` ShadowRoot 的稳定入口，选择器失效时安全放行，不扫描 iframe，不启用 `all_frames`。模块不读取 Cookie、账号、私信、评论正文或完整观看历史。
 
-1. URL 属于 Bilibili 支持范围；
-2. `document.visibilityState === "visible"`；
-3. 页面/浏览器窗口处于有效焦点；
-4. 没有浏览器休眠、页面冻结或超时心跳间隙。
+## 计时模型
 
-content script 发出 `SESSION_START`、`HEARTBEAT`、`ROUTE_CHANGE`、`SESSION_STOP`。协调者用时间戳与会话随机 ID 去重；累计相邻心跳差值时设置合理上限，超过上限视为中断，避免睡眠后一次补入数小时。跨本地午夜时将区间切开再归桶；周/月汇总从每日桶派生，不能维护三份互相漂移的权威数据。
+累计时间必须同时满足：
 
-墙上时间用于日期展示和计划，单调时间用于单次活跃区间差值（平台可用时）。系统时钟回拨、时区变化和 DST 都不得生成负数或重复统计。
+1. 当前来源已由用户配置和授权；
+2. 对应网站与目标已启用；
+3. 页面可见且窗口聚焦；
+4. 设备未空闲或锁定；
+5. 页面未被计划或时间规则阻断。
 
-## 时间规则与临时放行
+content script 发出 `start / heartbeat / route / stop`。后台按会话 ID 去重，心跳间隔超过上限视为中断；跨本地午夜拆分后写入每日桶。周/月统计只从每日桶汇总。普通计时只持久化 `TargetId + 日期 + 秒数`。
 
-- 时间判定是纯函数：`weekday + localTime + rules -> allow/block/defer`。
-- 规则先按星期匹配，再按本地 `HH:mm` 半开区间匹配。跨午夜时段归属开始日，并延续到次日结束时间。
-- `allow` 是 `block` 的显式例外：同一时刻同时命中时可用规则优先。只要存在启用的可用规则，未命中任何可用时段时默认不可用。
-- 命中可用规则时不受每日限额影响；未命中显式规则时，再由每日限额和板块默认行为决定。
-- 旧版未包含 `effect` 的时段在读取时迁移为 `block`；存储边界统一归一化为设置 schema v2，单板块最多 64 条时间规则。
-- 临时放行存储绝对过期时间和作用域，过期即失效；重启浏览器不能延长。
-- `alarms` 仅用于唤醒和刷新，不作为真实时间来源；每次唤醒重新计算状态。
+## 时间规则
 
-“观看计划模式”与普通板块屏蔽计划是两个独立策略层：
+规则是纯函数：`weekday + local time + target settings -> allow | block | defer`。
 
-- 计划模式默认关闭；开启后，`document_start` 的 content script 在启动计时或渲染普通遮罩前先请求导航判定；
-- 未携带有效授权的任意 `https://*.bilibili.com/*` 导航都会进入扩展自有 `plan.html`，且不把来源 URL、搜索词或用户标识附加给计划页；
-- 用户只能从扩展计划页点击“开始观看”创建授权；授权精确绑定 `itemId + BVID + expiresAt`，不能放行同域其他页面或相关视频；
-- 完成、删除、更换 BV 号、暂停计划模式或授权过期都会撤销授权；被计划模式阻断的时间不进入统计；
-- 队列持久化只保存规范化 BV 号及其 canonical `https://www.bilibili.com/video/BV…` URL，不保存原始查询参数。
+- 先按星期，再按 `HH:mm` 半开区间匹配；
+- 跨午夜区间归属开始日并延续到次日；
+- `allow` 优先于同一时刻的 `block`，并绕过每日额度；
+- 只要存在启用的 allow 规则，未命中 allow 的时间默认不可用；
+- 未命中显式规则时再应用每日额度；
+- 临时访问是明确、限时且可计数的例外，不因后台重启延长。
 
-## 数据契约
+## 计划
 
-首发逻辑键（以核心模块 `STORAGE_KEYS` 为唯一代码来源）：
+计划清单接受用户主动添加的 HTTP/HTTPS URL，保存规范化 URL、来源、标题、顺序和完成状态。开始项目时创建精确绑定 `itemId + URL identity + expiresAt` 的授权；删除、完成、修改、停用或到期会撤销授权。
 
-> `bilifocus.*` 是为已有安装保留的兼容命名空间。品牌重命名后不得直接更换这些键；未来迁移必须双读并经过版本化验证。
+站点模块可提供更严格的身份，例如 Bilibili 模块把视频规范化为 BVID/canonical URL。核心计划不能依赖任何特定网站标识。
 
-- `bilifocus.settings.v1`
-- `bilifocus.usage.v1`
-- `bilifocus.temporary-access.v1`
-- `bilifocus.plan-queue.v1`
-- `bilifocus.plan-access.v1`
+## 存储与迁移
 
-每个值包含 `schemaVersion`，读取时先验证再迁移。迁移必须幂等、保留可识别数据，并在失败时保留原值、回退到安全默认值；禁止静默覆盖损坏数据。正式类型以核心模块定义为准，变更时同步更新此文档和 fixtures。
+为兼容既有安装，逻辑键暂时保持 `bilifocus.*`；品牌变更不直接重命名持久化键：
 
-`bilifocus.settings.v1` 的逻辑键保持不变，当前值使用设置 schema v2；v1 时间段读取时补为 `effect: "block"`。UI 视图偏好使用独立的 `bilipace.plan.view`，值仅允许 `list` 或 `mindmap`。
+- `bilifocus.settings.v1`：当前值 schema v3；
+- `bilifocus.usage.v1`：当前值 schema v2，权威字段为 `byTarget`；
+- `bilifocus.temporary-access.v1`：当前值 schema v2；
+- `bilifocus.plan-queue.v1`；
+- `bilifocus.plan-access.v1`。
 
-数据最小化约束：统计只存本地日期、板块枚举和非负整数秒数。观看计划只在用户主动添加时保存 BV 号、canonical URL、标题、顺序、来源和完成状态。其余浏览过程不存完整 URL、标题、视频/用户 ID、账号、Cookie、搜索词或页面正文。
-
-内容降噪设置可保存用户主动输入的标题关键词与受限正则规则；它们只在本机匹配页面卡片标题，不保存命中的标题或生成浏览记录。
-
-## 导入与账号连接边界
-
-`src/integrations` 定义独立的 `BilibiliImportProvider` 端口，业务队列只接收最小化的 `{ bvid, title, url }`。当前实现包含：
-
-- 完全本地的批量 URL/BVID 解析、去重、标题清洗和规模上限；不跟随短链、不抓取页面元数据；
-- Bilibili 官方开放平台 provider 的 `not-configured` 安全占位，不发起请求、不读取 Cookie、不接收密码；
-- 面向未来的 watch-later、favorite-folders、favorite-media 能力接口。
-
-正式账号导入属于远程能力重大变更：必须使用官方文档端点与用户授权，在可信服务端交换令牌，客户端不得包含 secret；实现前须重新评审平台资质、scope、数据保留、撤销、网络失败与商店披露。未经书面许可不得以自动程序调用私有接口抓取账号数据。
+v1/v2 的 Bilibili 板块、计划和内容降噪设置在读取时迁移为兼容 capsule，只有安装 Bilibili 模块时才映射到新目标。迁移必须幂等、有界并保留无法识别的数据；损坏值回退到安全默认值。计划视图偏好使用 `hourleaf.plan.view`，仅允许 `list | mindmap`。
 
 ## 消息边界
 
-消息采用带版本的判别联合：`{ version, type, requestId, payload }`。接收端必须检查：
+消息使用 `{version, requestId, type, payload}`。后台必须验证发送方、URL 来源、权限、字段、长度、枚举与数组规模。content script 不能读取全量设置/历史、安装模块、请求任意 Chrome API 或传入脚本/CSS/storage key。扩展页才能执行站点 CRUD、计划 CRUD 与数据清理。
 
-- `sender.id` 属于当前扩展；扩展页即使打开在普通标签页中也按受信 extension URL 识别，不能仅用 `sender.tab` 判断；来自 content script 时 URL host 必须属于 Bilibili；
-- `type` 在白名单；payload 是普通 JSON，字段和值域有限；
-- 时间、字符串长度、数组规模和枚举合法；
-- 不接受要访问的任意 URL、脚本内容、CSS、方法名或任意 storage key。
+## UI 与文案
 
-响应不向 content script 返回全量历史、内部错误栈或其他标签页信息。
-
-计划队列 CRUD 只接受扩展页发送者；content script 只能请求基于 BVID 的导航判定，不能读取清单或创建观看授权。
-
-## 可访问性与 UI 稳定契约
-
-原生控件优先；所有开关、输入和图表有可访问名称。键盘焦点可见，状态不只靠颜色表达，200% 缩放不丢功能。测试优先使用 role/label；只有无稳定语义的关键容器才使用 `data-testid`。
-
-## 演进规则
-
-新增板块、统计维度或浏览器时，先扩充 domain 枚举/端口与表驱动测试，再接入 UI 和 adapter。新增远程服务、同步、账户、遥测或任何权限属于架构与隐私重大变更，必须先通过 [QUALITY.md](./QUALITY.md) 的重新评审。
+固定左侧导航顺序为：仪表盘、计划、配置、设置。窄屏降级为横向导航。所有页面共享 token、组件、状态和错误文案；站点模块只提供数据和能力，不拥有独立视觉系统。用户可见文本遵守 [UX_WRITING.md](./UX_WRITING.md)，不显示内部 provider、协议或调试建议。

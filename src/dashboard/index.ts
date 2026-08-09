@@ -3,6 +3,7 @@ import {
   SECTION_IDS,
   SECTION_LABELS,
   type DailyUsage,
+  type FocusSettings,
   type SectionId,
   type TrackingStatus,
   type UsagePeriod,
@@ -49,13 +50,14 @@ async function loadDashboard(period: UsagePeriod): Promise<void> {
   const sequence = ++loadSequence;
   renderLoading(period);
   try {
-    const [usage, tracking] = await Promise.all([
+    const [usage, tracking, settings] = await Promise.all([
       sendRequest({ type: "GET_USAGE", period }),
-      sendRequest({ type: "GET_TRACKING_STATUS" })
+      sendRequest({ type: "GET_TRACKING_STATUS" }),
+      sendRequest({ type: "GET_SETTINGS" })
     ]);
     if (sequence !== loadSequence) return;
     currentUsage = usage;
-    renderDashboard(usage, tracking);
+    renderDashboard(usage, tracking, settings);
   } catch (error) {
     if (sequence !== loadSequence) return;
     renderError(period, describeError(error));
@@ -122,18 +124,22 @@ function renderError(period: UsagePeriod, message: string): void {
   app.replaceChildren(createShell(period, state));
 }
 
-function renderDashboard(usage: UsageSummary, tracking: TrackingStatus): void {
+function renderDashboard(
+  usage: UsageSummary,
+  tracking: TrackingStatus,
+  settings: FocusSettings
+): void {
   const content = element("div", {
     children: [
-      createOverview(usage, tracking),
+      createOverview(usage, tracking, settings),
       element("div", {
         className: "dashboard-grid",
         children: [
           createTrendCard(usage),
           element("aside", {
             className: "dashboard-aside",
-            attrs: { "aria-label": "板块统计" },
-            children: [createSectionBreakdown(usage)]
+            attrs: { "aria-label": "网站与模块统计" },
+            children: [createScopeCard(usage, settings), createSectionBreakdown(usage, settings)]
           })
         ]
       }),
@@ -185,8 +191,12 @@ function createPeriodControl(selected: UsagePeriod): HTMLElement {
   });
 }
 
-function createOverview(usage: UsageSummary, tracking: TrackingStatus): HTMLElement {
-  const topSection = getTopSection(usage);
+function createOverview(
+  usage: UsageSummary,
+  tracking: TrackingStatus,
+  settings: FocusSettings
+): HTMLElement {
+  const topTarget = getTopTarget(usage, settings);
   return element("section", {
     className: "overview-grid",
     attrs: { "aria-label": `${PERIOD_LABELS[usage.period]}概览` },
@@ -207,8 +217,8 @@ function createOverview(usage: UsageSummary, tracking: TrackingStatus): HTMLElem
       ),
       createMetricCard(
         "最多使用",
-        topSection ? SECTION_LABELS[topSection] : "暂无",
-        topSection ? formatDuration(usage.bySection[topSection], true) : "还没有产生使用记录"
+        topTarget?.label ?? "暂无",
+        topTarget ? formatDuration(topTarget.seconds, true) : "还没有产生使用记录"
       )
     ]
   });
@@ -216,7 +226,7 @@ function createOverview(usage: UsageSummary, tracking: TrackingStatus): HTMLElem
 
 function liveTrackingLabel(tracking: TrackingStatus): string {
   if (tracking.isTracking) {
-    return `正在计时 · ${tracking.section ? SECTION_LABELS[tracking.section] : "Bilibili"}`;
+    return `正在计时 · ${tracking.section ? SECTION_LABELS[tracking.section] : "受管网站"}`;
   }
   if (tracking.section === null) return "当前未计时";
   if (tracking.idleState === "idle" || tracking.idleState === "locked") return "离开设备，已暂停";
@@ -290,7 +300,7 @@ function createTrendCard(usage: UsageSummary): HTMLElement {
           element("div", {
             children: [
               element("h2", { text: "每日趋势", attrs: { id: "trend-title" } }),
-              element("p", { text: "只统计 Bilibili 页面处于前台且浏览器窗口活跃的时间" })
+              element("p", { text: "只统计已添加网站处于前台且浏览器窗口活跃的时间" })
             ]
           }),
           element("span", {
@@ -311,26 +321,38 @@ function createTrendCard(usage: UsageSummary): HTMLElement {
   });
 }
 
-function createSectionBreakdown(usage: UsageSummary): HTMLElement {
-  const maximum = Math.max(1, ...SECTION_IDS.map((section) => usage.bySection[section]));
-  const rows = [...SECTION_IDS]
-    .sort((a, b) => usage.bySection[b] - usage.bySection[a])
-    .map((section) => {
-      const value = usage.bySection[section];
+function createSectionBreakdown(usage: UsageSummary, settings: FocusSettings): HTMLElement {
+  const targetEntries = Object.entries(usage.byTarget);
+  const rowsData =
+    targetEntries.length > 0
+      ? targetEntries.map(([targetId, value], index) => ({
+          id: targetId,
+          label: settings.targets[targetId]?.label ?? targetId,
+          value,
+          color: Object.values(SECTION_COLORS)[index % SECTION_IDS.length] ?? "#63738f"
+        }))
+      : SECTION_IDS.map((section) => ({
+          id: section,
+          label: SECTION_LABELS[section],
+          value: usage.bySection[section],
+          color: SECTION_COLORS[section]
+        }));
+  const maximum = Math.max(1, ...rowsData.map((row) => row.value));
+  const rows = rowsData
+    .sort((left, right) => right.value - left.value)
+    .map((row) => {
+      const value = row.value;
       const percentage = Math.max(0, Math.min(100, (value / maximum) * 100));
       return element("div", {
         className: "section-total",
-        attrs: { style: `--section-color: ${SECTION_COLORS[section]}` },
+        attrs: { style: `--section-color: ${row.color}` },
         children: [
           element("div", {
             className: "section-total__header",
             children: [
               element("span", {
                 className: "section-total__name",
-                children: [
-                  element("span", { className: "section-total__dot" }),
-                  SECTION_LABELS[section]
-                ]
+                children: [element("span", { className: "section-total__dot" }), row.label]
               }),
               element("span", {
                 className: "section-total__value",
@@ -342,7 +364,7 @@ function createSectionBreakdown(usage: UsageSummary): HTMLElement {
             className: "section-total__track",
             attrs: {
               role: "progressbar",
-              "aria-label": `${SECTION_LABELS[section]}时长`,
+              "aria-label": `${row.label}时长`,
               "aria-valuemin": "0",
               "aria-valuemax": maximum,
               "aria-valuenow": value
@@ -362,11 +384,67 @@ function createSectionBreakdown(usage: UsageSummary): HTMLElement {
     className: "section-breakdown card",
     attrs: { "aria-labelledby": "breakdown-title", "data-testid": "dashboard-section-list" },
     children: [
-      element("h2", { text: "板块分布", attrs: { id: "breakdown-title" } }),
+      element("h2", { text: "规则分类", attrs: { id: "breakdown-title" } }),
       element("p", { text: "按累计时长从高到低排列" }),
       element("div", { className: "section-totals", children: rows })
     ]
   });
+}
+
+function createScopeCard(usage: UsageSummary, settings: FocusSettings): HTMLElement {
+  const sites = Object.values(settings.sites).sort((left, right) =>
+    left.label.localeCompare(right.label)
+  );
+  const siteRows = sites.map((site) => {
+    const seconds = site.targetIds.reduce(
+      (total, targetId) => total + (usage.byTarget[targetId] ?? 0),
+      0
+    );
+    return createScopeRow(site.label || site.hostname, formatDuration(seconds, true));
+  });
+  const moduleTotals = new Map<string, number>();
+  for (const target of Object.values(settings.targets)) {
+    if (!target.moduleId) continue;
+    moduleTotals.set(
+      target.moduleId,
+      (moduleTotals.get(target.moduleId) ?? 0) + (usage.byTarget[target.id] ?? 0)
+    );
+  }
+  const moduleRows = [...moduleTotals.entries()].map(([moduleId, seconds]) =>
+    createScopeRow(moduleDisplayName(moduleId), formatDuration(seconds, true))
+  );
+
+  return element("section", {
+    className: "scope-card card",
+    attrs: { "aria-labelledby": "scope-title" },
+    children: [
+      element("h2", { text: "网站与模块", attrs: { id: "scope-title" } }),
+      element("div", {
+        className: "scope-card__rows",
+        children: [
+          element("h3", { text: "网站" }),
+          ...(siteRows.length > 0
+            ? siteRows
+            : [element("p", { className: "scope-card__empty", text: "暂无已添加网站" })]),
+          element("h3", { text: "模块" }),
+          ...(moduleRows.length > 0
+            ? moduleRows
+            : [element("p", { className: "scope-card__empty", text: "暂无启用模块" })])
+        ]
+      })
+    ]
+  });
+}
+
+function createScopeRow(label: string, value: string): HTMLElement {
+  return element("div", {
+    className: "scope-card__row",
+    children: [element("strong", { text: label }), element("span", { text: value })]
+  });
+}
+
+function moduleDisplayName(moduleId: string): string {
+  return moduleId === "hourleaf.site.bilibili" ? "哔哩哔哩 · Ave Mujica" : moduleId;
 }
 
 function createFooter(): HTMLElement {
@@ -379,7 +457,7 @@ function createFooter(): HTMLElement {
   return element("footer", {
     className: "dashboard-footer",
     children: [
-      element("p", { text: "BiliPace 仅保存日期、板块与时长，不记录视频、搜索词或账号信息。" }),
+      element("p", { text: "Hourleaf 仅保存网站、分类与聚合时长，不记录页面正文。" }),
       clearButton
     ]
   });
@@ -442,15 +520,35 @@ function openClearDialog(): void {
   cancel.focus();
 }
 
-function getTopSection(usage: UsageSummary): SectionId | null {
-  return SECTION_IDS.reduce<SectionId | null>((top, section) => {
-    if (usage.bySection[section] <= 0) return top;
-    return top === null || usage.bySection[section] > usage.bySection[top] ? section : top;
-  }, null);
+function getTopTarget(
+  usage: UsageSummary,
+  settings: FocusSettings
+): { id: string; label: string; seconds: number } | null {
+  let top: { id: string; label: string; seconds: number } | null = null;
+  for (const [targetId, seconds] of Object.entries(usage.byTarget)) {
+    if (seconds <= 0 || (top && seconds <= top.seconds)) continue;
+    top = {
+      id: targetId,
+      label: settings.targets[targetId]?.label ?? targetId,
+      seconds
+    };
+  }
+  if (top) return top;
+  const legacySection = SECTION_IDS.find((section) => usage.bySection[section] > 0);
+  return legacySection
+    ? {
+        id: legacySection,
+        label: SECTION_LABELS[legacySection],
+        seconds: usage.bySection[legacySection]
+      }
+    : null;
 }
 
 function totalForDay(day: DailyUsage): number {
-  return SECTION_IDS.reduce((total, section) => total + day.bySection[section], 0);
+  const targetTotal = Object.values(day.byTarget).reduce((total, seconds) => total + seconds, 0);
+  return targetTotal > 0
+    ? targetTotal
+    : SECTION_IDS.reduce((total, section) => total + day.bySection[section], 0);
 }
 
 function parseDate(value: string): Date {

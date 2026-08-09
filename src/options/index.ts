@@ -1,5 +1,5 @@
 import { sendRequest } from "../shared/messages";
-import { MAX_TIME_ACCESS_RULES, SETTINGS_SCHEMA_VERSION } from "../shared/config";
+import { MAX_TIME_ACCESS_RULES } from "../shared/config";
 import { createPresetRules, TIME_ACCESS_PRESETS, type TimeAccessPreset } from "../shared/schedule";
 import {
   CONTENT_FILTER_IDS,
@@ -7,7 +7,9 @@ import {
   SECTION_LABELS,
   type ContentFilterId,
   type FocusSettings,
+  type ManagedSite,
   type SectionId,
+  type SiteTargetSettings,
   type TimeAccessEffect,
   type TimeAccessRule,
   type Weekday
@@ -62,6 +64,10 @@ let topSaveButton: HTMLButtonElement | null = null;
 let savebarButton: HTMLButtonElement | null = null;
 let saveState: HTMLElement | null = null;
 let savebar: HTMLElement | null = null;
+let selectedSiteId: string | null = null;
+
+type RuleOwner =
+  { kind: "section"; id: SectionId; label: string } | { kind: "target"; id: string; label: string };
 
 window.addEventListener("beforeunload", (event) => {
   if (!isDirty()) return;
@@ -74,6 +80,7 @@ async function loadOptions(): Promise<void> {
   renderLoading();
   try {
     draft = cloneSettings(await sendRequest({ type: "GET_SETTINGS" }));
+    selectedSiteId = selectInitialSite(draft);
     savedSnapshot = snapshot(draft);
     renderOptions();
   } catch (error) {
@@ -158,17 +165,329 @@ function createTopbar(): HTMLElement {
 }
 
 function createPageHeader(): HTMLElement {
+  const picker = createSitePicker();
   return element("header", {
     className: "options-header",
-    children: [element("h1", { className: "page-title", text: "配置" })]
+    children: [element("h1", { className: "page-title", text: "配置" }), picker]
   });
 }
 
 function createSettingsContent(): HTMLElement {
+  const site = getSelectedSite();
+  if (!site) {
+    return element("div", {
+      className: "settings-content",
+      children: [
+        element("section", {
+          className: "card options-empty-site",
+          children: [
+            icon("plus"),
+            element("h2", { text: "还没有可配置的网站" }),
+            element("a", {
+              className: "btn btn--primary",
+              text: "打开设置",
+              attrs: { href: "home.html" }
+            })
+          ]
+        })
+      ]
+    });
+  }
   return element("div", {
     className: "settings-content",
-    children: [createContentFiltersArea(), createSectionsArea()]
+    children: [
+      createSiteContextArea(site),
+      ...(__HOURLEAF_BILIBILI_BUNDLED__
+        ? siteUsesModule(site, "hourleaf.site.bilibili")
+          ? [createContentFiltersArea(), createSectionsArea(site)]
+          : [createGenericTargetsArea(site)]
+        : [createGenericTargetsArea(site)])
+    ]
   });
+}
+
+function createSitePicker(): HTMLElement | null {
+  if (!draft) return null;
+  const sites = Object.values(draft.sites).sort((left, right) =>
+    left.label.localeCompare(right.label)
+  );
+  if (sites.length === 0) return null;
+  const select = element("select", {
+    className: "input options-site-picker__select",
+    attrs: { "aria-label": "当前配置网站" },
+    children: sites.map((site) =>
+      element("option", {
+        text: site.label || site.hostname,
+        attrs: { value: site.id, selected: site.id === selectedSiteId }
+      })
+    )
+  });
+  select.addEventListener("change", () => {
+    selectedSiteId = select.value;
+    renderOptions();
+  });
+  return element("label", {
+    className: "options-site-picker",
+    children: [element("span", { text: "当前网站" }), select]
+  });
+}
+
+function createSiteContextArea(site: ManagedSite): HTMLElement {
+  const targets = targetsForSite(site);
+  const moduleIds = [
+    ...new Set(targets.map((target) => target.moduleId).filter(Boolean))
+  ] as string[];
+  return element("section", {
+    className: "site-context card",
+    attrs: { "aria-label": "当前网站配置范围" },
+    children: [
+      element("div", {
+        children: [
+          element("span", { className: "site-context__eyebrow", text: "当前网站" }),
+          element("h2", { text: site.label || site.hostname }),
+          element("p", { text: site.origin })
+        ]
+      }),
+      element("div", {
+        className: "site-context__meta",
+        children: [
+          element("span", {
+            className: `status-chip${site.enabled ? " status-chip--success" : ""}`,
+            text: site.enabled ? "运行中" : "已暂停"
+          }),
+          element("span", {
+            className: "status-chip",
+            text:
+              moduleIds.length > 0 ? moduleIds.map(moduleDisplayName).join(" · ") : "通用网站规则"
+          })
+        ]
+      })
+    ]
+  });
+}
+
+function createGenericTargetsArea(site: ManagedSite): HTMLElement {
+  const targets = targetsForSite(site);
+  return element("section", {
+    attrs: { "aria-labelledby": "generic-targets-title" },
+    children: [
+      createSectionHeading("generic-targets-title", "网站规则", "当前网站的访问限额与时间状态。"),
+      element("div", {
+        className: "generic-target-list",
+        children:
+          targets.length > 0
+            ? targets.map(createGenericTargetCard)
+            : [
+                element("div", {
+                  className: "card generic-target-empty",
+                  text: "此网站还没有可配置规则"
+                })
+              ]
+      })
+    ]
+  });
+}
+
+function createGenericTargetCard(target: SiteTargetSettings): HTMLElement {
+  const owner = targetRuleOwner(target);
+  const toggle = createToggle(
+    `${target.label}规则`,
+    target.enabled,
+    target.moduleSectionId
+      ? `section-toggle-${target.moduleSectionId}`
+      : `target-toggle-${target.id}`
+  );
+  toggle.input.addEventListener("change", () => {
+    if (!draft) return;
+    const current = draft.targets[target.id];
+    if (!current) return;
+    current.enabled = toggle.input.checked;
+    updateDirtyState();
+  });
+  const limit = element("input", {
+    className: "input",
+    attrs: {
+      type: "number",
+      min: 1,
+      max: 1440,
+      step: 5,
+      value: target.dailyLimitMinutes ?? "",
+      placeholder: "不限额",
+      "aria-label": `${target.label}每日限额（分钟）`
+    }
+  });
+  limit.addEventListener("input", () => {
+    if (!draft) return;
+    const current = draft.targets[target.id];
+    if (!current) return;
+    current.dailyLimitMinutes = limit.value
+      ? Math.min(1440, Math.max(1, Math.round(Number(limit.value))))
+      : null;
+    updateDirtyState();
+  });
+  const scheduleItems = target.schedules.length
+    ? target.schedules.map((rule) => createScheduleItem(owner, rule))
+    : [element("li", { className: "schedule-empty", text: "未设置时间规则" })];
+  const addRule = element("button", {
+    className: "btn",
+    attrs: {
+      type: "button",
+      "aria-label": `为${target.label}添加时间规则`,
+      "data-testid": target.moduleSectionId
+        ? target.moduleSectionId === "home"
+          ? "schedule-add"
+          : `schedule-add-${target.moduleSectionId}`
+        : `schedule-add-${target.id}`
+    },
+    children: [icon("plus"), "自定义"]
+  });
+  addRule.addEventListener("click", () => openScheduleDialog(owner));
+  const addPreset = element("button", {
+    className: "btn",
+    attrs: { type: "button", "aria-label": `为${target.label}添加常用时段` },
+    children: [icon("clock"), "常用时段"]
+  });
+  addPreset.addEventListener("click", () => openPresetDialog(owner));
+  const accessToggle = createToggle(
+    `${target.label}临时访问`,
+    target.temporaryAccess.enabled,
+    `temporary-access-${target.id}`
+  );
+  const accessDuration = element("input", {
+    className: "input",
+    attrs: {
+      type: "number",
+      min: 1,
+      max: 60,
+      value: target.temporaryAccess.durationMinutes,
+      "aria-label": `${target.label}每次临时访问分钟数`
+    }
+  });
+  const accessUses = element("input", {
+    className: "input",
+    attrs: {
+      type: "number",
+      min: 0,
+      max: 50,
+      value: target.temporaryAccess.maxUsesPerDay,
+      "aria-label": `${target.label}每日临时访问次数`
+    }
+  });
+  accessToggle.input.addEventListener("change", () => {
+    const current = draft?.targets[target.id];
+    if (!current) return;
+    current.temporaryAccess.enabled = accessToggle.input.checked;
+    updateDirtyState();
+  });
+  accessDuration.addEventListener("input", () => {
+    const current = draft?.targets[target.id];
+    if (!current) return;
+    current.temporaryAccess.durationMinutes = clampNumber(accessDuration.value, 1, 60, 5);
+    updateDirtyState();
+  });
+  accessUses.addEventListener("input", () => {
+    const current = draft?.targets[target.id];
+    if (!current) return;
+    current.temporaryAccess.maxUsesPerDay = clampNumber(accessUses.value, 0, 50, 3);
+    updateDirtyState();
+  });
+  return element("article", {
+    className: "card generic-target-card",
+    children: [
+      element("header", {
+        children: [
+          element("div", {
+            children: [element("h3", { text: target.label }), element("p", { text: target.id })]
+          }),
+          toggle.label
+        ]
+      }),
+      element("div", {
+        className: "generic-target-card__limit",
+        children: [element("span", { text: "每日限额" }), limit, element("span", { text: "分钟" })]
+      }),
+      element("div", {
+        className: "schedule-heading",
+        children: [
+          element("h4", { text: "时间规则" }),
+          element("div", { className: "schedule-heading__actions", children: [addPreset, addRule] })
+        ]
+      }),
+      element("ul", { className: "schedule-list", children: scheduleItems }),
+      element("div", {
+        className: "generic-target-card__temporary",
+        children: [
+          createSettingInline("临时访问", accessToggle.label),
+          createSettingInline("每次分钟", accessDuration),
+          createSettingInline("每日次数", accessUses)
+        ]
+      })
+    ]
+  });
+}
+
+function createSettingInline(label: string, control: HTMLElement): HTMLElement {
+  return element("label", {
+    className: "generic-target-card__temporary-field",
+    children: [element("span", { text: label }), control]
+  });
+}
+
+function clampNumber(value: string, min: number, max: number, fallback: number): number {
+  const parsed = Math.round(Number(value));
+  return Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback;
+}
+
+function selectInitialSite(settings: FocusSettings): string | null {
+  return (
+    Object.values(settings.sites).sort(
+      (left, right) => Number(right.enabled) - Number(left.enabled)
+    )[0]?.id ?? null
+  );
+}
+
+function getSelectedSite(): ManagedSite | null {
+  if (!draft || !selectedSiteId) return null;
+  return draft.sites[selectedSiteId] ?? null;
+}
+
+function targetsForSite(site: ManagedSite): SiteTargetSettings[] {
+  if (!draft) return [];
+  return site.targetIds
+    .map((id) => draft?.targets[id])
+    .filter((target): target is SiteTargetSettings => Boolean(target));
+}
+
+function sectionRuleOwner(section: SectionId): RuleOwner {
+  return { kind: "section", id: section, label: SECTION_LABELS[section] };
+}
+
+function targetRuleOwner(target: SiteTargetSettings): RuleOwner {
+  return { kind: "target", id: target.id, label: target.label };
+}
+
+function scheduleRulesFor(owner: RuleOwner): TimeAccessRule[] {
+  if (!draft) return [];
+  return owner.kind === "section"
+    ? draft.sectionRules[owner.id].schedules
+    : (draft.targets[owner.id]?.schedules ?? []);
+}
+
+function replaceScheduleRules(owner: RuleOwner, rules: TimeAccessRule[]): void {
+  if (!draft) return;
+  if (owner.kind === "section") draft.sectionRules[owner.id].schedules = rules;
+  else {
+    const target = draft.targets[owner.id];
+    if (target) target.schedules = rules;
+  }
+}
+
+function siteUsesModule(site: ManagedSite, moduleId: string): boolean {
+  return targetsForSite(site).some((target) => target.moduleId === moduleId);
+}
+
+function moduleDisplayName(moduleId: string): string {
+  return moduleId === "hourleaf.site.bilibili" ? "哔哩哔哩 · Ave Mujica" : moduleId;
 }
 
 function createContentFiltersArea(): HTMLElement {
@@ -345,15 +664,21 @@ function createContentFiltersArea(): HTMLElement {
   });
 }
 
-function createSectionsArea(): HTMLElement {
+function createSectionsArea(site: ManagedSite): HTMLElement {
   if (!draft) return element("section");
+  const moduleTargets = targetsForSite(site).filter(
+    (target) => target.moduleId === "hourleaf.site.bilibili"
+  );
   return element("section", {
     attrs: { id: "sections", "aria-labelledby": "sections-title" },
     children: [
       createSectionHeading("sections-title", "整页专注", "设置板块限额和时间规则。"),
       element("div", {
         className: "section-list",
-        children: SECTION_IDS.map((section) => createSectionCard(section))
+        children:
+          moduleTargets.length > 0
+            ? moduleTargets.map(createGenericTargetCard)
+            : SECTION_IDS.map((section) => createSectionCard(section))
       })
     ]
   });
@@ -361,6 +686,7 @@ function createSectionsArea(): HTMLElement {
 
 function createSectionCard(section: SectionId): HTMLElement {
   if (!draft) return element("article");
+  const owner = sectionRuleOwner(section);
   const rule = draft.sectionRules[section];
   const sectionToggle = createToggle(
     `专注拦截${SECTION_LABELS[section]}`,
@@ -407,7 +733,7 @@ function createSectionCard(section: SectionId): HTMLElement {
 
   const scheduleItems =
     rule.schedules.length > 0
-      ? rule.schedules.map((schedule) => createScheduleItem(section, schedule))
+      ? rule.schedules.map((schedule) => createScheduleItem(owner, schedule))
       : [
           element("li", {
             className: "schedule-empty",
@@ -424,13 +750,13 @@ function createSectionCard(section: SectionId): HTMLElement {
     },
     children: [icon("plus"), "自定义"]
   });
-  addButton.addEventListener("click", () => openScheduleDialog(section));
+  addButton.addEventListener("click", () => openScheduleDialog(owner));
   const presetButton = element("button", {
     className: "btn",
     attrs: { type: "button", "aria-label": `为${SECTION_LABELS[section]}添加常用时段` },
     children: [icon("clock"), "常用时段"]
   });
-  presetButton.addEventListener("click", () => openPresetDialog(section));
+  presetButton.addEventListener("click", () => openPresetDialog(owner));
 
   const allowCount = rule.schedules.filter((schedule) => schedule.effect === "allow").length;
   const blockCount = rule.schedules.filter((schedule) => schedule.effect === "block").length;
@@ -508,13 +834,13 @@ function createSectionCard(section: SectionId): HTMLElement {
   return card;
 }
 
-function createScheduleItem(section: SectionId, schedule: TimeAccessRule): HTMLLIElement {
+function createScheduleItem(owner: RuleOwner, schedule: TimeAccessRule): HTMLLIElement {
   const editButton = element("button", {
     className: "btn btn--icon",
     attrs: { type: "button", title: "编辑时段", "aria-label": `编辑${schedule.name}` },
     children: [icon("edit")]
   });
-  editButton.addEventListener("click", () => openScheduleDialog(section, schedule));
+  editButton.addEventListener("click", () => openScheduleDialog(owner, schedule));
   const deleteButton = element("button", {
     className: "btn btn--icon btn--danger",
     attrs: { type: "button", title: "删除时段", "aria-label": `删除${schedule.name}` },
@@ -522,8 +848,9 @@ function createScheduleItem(section: SectionId, schedule: TimeAccessRule): HTMLL
   });
   deleteButton.addEventListener("click", () => {
     if (!draft) return;
-    draft.sectionRules[section].schedules = draft.sectionRules[section].schedules.filter(
-      (candidate) => candidate.id !== schedule.id
+    replaceScheduleRules(
+      owner,
+      scheduleRulesFor(owner).filter((candidate) => candidate.id !== schedule.id)
     );
     renderOptionsPreservingScroll();
     toast(`已从草稿删除“${schedule.name}”`);
@@ -622,7 +949,7 @@ function createToggle(
   };
 }
 
-function openScheduleDialog(section: SectionId, existing?: TimeAccessRule): void {
+function openScheduleDialog(owner: RuleOwner, existing?: TimeAccessRule): void {
   if (!draft) return;
   const schedule: TimeAccessRule = existing
     ? { ...existing, days: [...existing.days] }
@@ -711,7 +1038,7 @@ function openScheduleDialog(section: SectionId, existing?: TimeAccessRule): void
           element("div", {
             children: [
               element("h2", {
-                text: existing ? "编辑时间规则" : `为${SECTION_LABELS[section]}添加时间规则`,
+                text: existing ? "编辑时间规则" : `为${owner.label}添加时间规则`,
                 attrs: { id: titleId }
               })
             ]
@@ -824,7 +1151,7 @@ function openScheduleDialog(section: SectionId, existing?: TimeAccessRule): void
       startTime: startInput.value,
       endTime: endInput.value
     };
-    const schedules = draft.sectionRules[section].schedules;
+    const schedules = scheduleRulesFor(owner);
     const index = schedules.findIndex((candidate) => candidate.id === updated.id);
     if (index >= 0) schedules[index] = updated;
     else if (schedules.length < MAX_TIME_ACCESS_RULES) schedules.push(updated);
@@ -844,9 +1171,9 @@ function openScheduleDialog(section: SectionId, existing?: TimeAccessRule): void
   window.setTimeout(() => nameInput.focus(), 0);
 }
 
-function openPresetDialog(section: SectionId): void {
+function openPresetDialog(owner: RuleOwner): void {
   if (!draft) return;
-  const titleId = `preset-dialog-${section}`;
+  const titleId = `preset-dialog-${owner.kind}-${owner.id.replace(/[^A-Za-z0-9_-]/gu, "-")}`;
   const dayInputs = WEEKDAYS.map((day) => {
     const input = element("input", {
       attrs: { type: "checkbox", value: day.value, checked: true, "aria-label": day.label }
@@ -880,7 +1207,7 @@ function openPresetDialog(section: SectionId): void {
               attrs: { type: "button" }
             });
             button.addEventListener("click", () =>
-              addPreset(section, preset, effect, dayInputs, note)
+              addPreset(owner, preset, effect, dayInputs, note)
             );
             return button;
           })
@@ -933,7 +1260,7 @@ function openPresetDialog(section: SectionId): void {
 }
 
 function addPreset(
-  section: SectionId,
+  owner: RuleOwner,
   preset: TimeAccessPreset,
   effect: TimeAccessEffect,
   dayInputs: ReadonlyArray<{ input: HTMLInputElement; day: (typeof WEEKDAYS)[number] }>,
@@ -946,7 +1273,7 @@ function addPreset(
     return;
   }
 
-  const rules = draft.sectionRules[section].schedules;
+  const rules = scheduleRulesFor(owner);
   const signatures = new Set(rules.map(timeRuleSignature));
   const candidates = createPresetRules(preset, effect, days, createId).filter(
     (candidate) => !signatures.has(timeRuleSignature(candidate))
@@ -1024,33 +1351,7 @@ function crossesMidnight(schedule: TimeAccessRule): boolean {
 }
 
 function cloneSettings(settings: FocusSettings): FocusSettings {
-  return {
-    schemaVersion: SETTINGS_SCHEMA_VERSION,
-    enabled: settings.enabled,
-    temporaryAccess: { ...settings.temporaryAccess },
-    planMode: { ...settings.planMode },
-    contentFilters: {
-      ...settings.contentFilters,
-      hiddenElements: { ...settings.contentFilters.hiddenElements },
-      videoCards: {
-        ...settings.contentFilters.videoCards,
-        keywords: [...settings.contentFilters.videoCards.keywords],
-        regexPatterns: [...settings.contentFilters.videoCards.regexPatterns]
-      }
-    },
-    sectionRules: Object.fromEntries(
-      SECTION_IDS.map((section) => [
-        section,
-        {
-          ...settings.sectionRules[section],
-          schedules: settings.sectionRules[section].schedules.map((schedule) => ({
-            ...schedule,
-            days: [...schedule.days]
-          }))
-        }
-      ])
-    ) as FocusSettings["sectionRules"]
-  };
+  return JSON.parse(JSON.stringify(settings)) as FocusSettings;
 }
 
 function parseLines(value: string): string[] {

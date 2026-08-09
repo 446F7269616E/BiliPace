@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyBilibiliUrl } from "../../src/shared/url";
+import { classifyBilibiliModuleUrl as classifyBilibiliUrl } from "../../src/modules/bilibili";
 
 describe("classifyBilibiliUrl", () => {
   it.each([

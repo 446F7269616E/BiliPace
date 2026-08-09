@@ -114,8 +114,8 @@ function renderError(message: string): void {
 function renderPopup(data: PopupData): void {
   currentData = data;
   const shell = element("div", { className: "popup-shell" });
-  const totalBlocked = SECTION_IDS.filter(
-    (section) => data.settings.sectionRules[section].enabled
+  const totalBlocked = Object.values(data.settings.targets).filter(
+    (target) => target.enabled
   ).length;
   const focusActive = data.settings.enabled;
   const focusToggle = createToggle("专注保护", focusActive, "popup-focus-toggle");
@@ -162,14 +162,14 @@ function renderPopup(data: PopupData): void {
 
   shell.append(
     createHeader(),
-    createTodayCard(data.usage, data.trackingStatus),
+    createTodayCard(data.usage, data.trackingStatus, data.settings),
     focusControl,
     createPlanModeControl(data),
     createPagePolicy(data),
     createActions(),
     element("p", {
       className: "popup-footer",
-      text: "数据保存在当前浏览器 · BiliPace 非官方项目"
+      text: "数据仅保存在当前浏览器 · Hourleaf"
     })
   );
   app.replaceChildren(shell);
@@ -232,15 +232,15 @@ function createPlanModeControl(data: PopupData): HTMLElement {
 }
 
 function createHeader(): HTMLElement {
-  const logo = element("span", { className: "brand__mark", children: [icon("focus")] });
+  const logo = element("span", { className: "brand__mark", children: [icon("leaf")] });
   const brand = element("div", {
     className: "brand",
-    attrs: { "aria-label": "BiliPace 哔哩节拍" },
+    attrs: { "aria-label": "Hourleaf" },
     children: [
       logo,
       element("span", {
         className: "brand__meta",
-        children: [element("span", { text: "BiliPace" }), element("small", { text: "哔哩节拍" })]
+        children: [element("span", { text: "Hourleaf" }), element("small", { text: "专注每一刻" })]
       })
     ]
   });
@@ -259,18 +259,36 @@ function createHeader(): HTMLElement {
   return element("header", { className: "popup-header", children: [brand, settingsLink] });
 }
 
-function createTodayCard(usage: UsageSummary, tracking: TrackingStatus): HTMLElement {
+function createTodayCard(
+  usage: UsageSummary,
+  tracking: TrackingStatus,
+  settings: FocusSettings
+): HTMLElement {
+  const topTarget = Object.entries(usage.byTarget).reduce<{ id: string; seconds: number } | null>(
+    (top, [id, seconds]) => {
+      if (seconds <= 0) return top;
+      return !top || seconds > top.seconds ? { id, seconds } : top;
+    },
+    null
+  );
   const topSection = SECTION_IDS.reduce<SectionId | null>((top, section) => {
     if (usage.bySection[section] <= 0) return top;
     return top === null || usage.bySection[section] > usage.bySection[top] ? section : top;
   }, null);
-  const detail = topSection
-    ? `最多用于${SECTION_LABELS[topSection]} · ${formatDuration(usage.bySection[topSection], true)}`
-    : "暂无使用记录";
+  const detail = topTarget
+    ? `最多用于${settings.targets[topTarget.id]?.label ?? "受管页面"} · ${formatDuration(topTarget.seconds, true)}`
+    : topSection
+      ? `最多用于${SECTION_LABELS[topSection]} · ${formatDuration(usage.bySection[topSection], true)}`
+      : "暂无使用记录";
+  const trackingLabel = tracking.targetId
+    ? settings.targets[tracking.targetId]?.label
+    : tracking.section
+      ? SECTION_LABELS[tracking.section]
+      : undefined;
   const liveLabel = tracking.isTracking
-    ? `正在计时 · ${tracking.section ? SECTION_LABELS[tracking.section] : "Bilibili"}`
+    ? `正在计时 · ${trackingLabel ?? "受管网站"}`
     : tracking.section === null
-      ? "当前页面不是 Bilibili"
+      ? "当前页面尚未由模块管理"
       : tracking.idleState === "idle" || tracking.idleState === "locked"
         ? "你已离开，计时自动暂停"
         : "当前未计时";
@@ -281,7 +299,7 @@ function createTodayCard(usage: UsageSummary, tracking: TrackingStatus): HTMLEle
     children: [
       element("p", {
         className: "today-card__label",
-        text: "今日 Bilibili 使用时间",
+        text: "今日受管网站使用时间",
         attrs: { id: "today-title" }
       }),
       element("p", {
@@ -305,11 +323,16 @@ function createTodayCard(usage: UsageSummary, tracking: TrackingStatus): HTMLEle
 
 function createPagePolicy(data: PopupData): HTMLElement {
   const decision = data.pageDecision;
-  const sectionLabel = decision?.section ? SECTION_LABELS[decision.section] : "当前页面";
-  const status = decision?.blocked ? "blocked" : decision?.section ? "allowed" : "unmanaged";
+  const sectionLabel = decision?.targetId
+    ? (data.settings.targets[decision.targetId]?.label ?? "当前规则")
+    : decision?.section
+      ? SECTION_LABELS[decision.section]
+      : "当前页面";
+  const managed = Boolean(decision?.targetId || decision?.section);
+  const status = decision?.blocked ? "blocked" : managed ? "allowed" : "unmanaged";
   const statusTitle = decision?.blocked
     ? `${sectionLabel}已进入专注拦截`
-    : decision?.section
+    : managed
       ? `${sectionLabel}当前可访问`
       : "这个页面不受专注规则影响";
   const statusDetail = describeDecision(decision);
@@ -451,10 +474,10 @@ function createToggle(
 }
 
 function describeDecision(decision: PageDecision | null): string {
-  if (!decision) return "未检测到 Bilibili 页面";
+  if (!decision) return "未检测到受管网站页面";
   switch (decision.reason) {
     case "not-managed":
-      return "仅管理 Bilibili 的指定板块";
+      return "当前页面尚未配置规则";
     case "focus-disabled":
       return "专注保护已关闭";
     case "rule-disabled":

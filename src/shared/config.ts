@@ -4,17 +4,23 @@ import {
   type ContentFilterSettings,
   type DeepPartial,
   type FocusSettings,
+  type ManagedSite,
   SECTION_IDS,
   type SectionId,
   type SectionRule,
+  type SiteId,
+  type SiteTargetSettings,
+  type TargetId,
   type TemporaryAccessSettings,
   type TimeAccessRule,
   type TimeAccessEffect,
   type Weekday
 } from "./types";
 
-export const SETTINGS_SCHEMA_VERSION = 2 as const;
+export const SETTINGS_SCHEMA_VERSION = 3 as const;
 export const MAX_TIME_ACCESS_RULES = 64;
+export const MAX_MANAGED_SITES = 256;
+export const MAX_TARGETS = 512;
 
 const DEFAULT_BLOCKED_SECTIONS: ReadonlySet<SectionId> = new Set(["home", "dynamic", "popular"]);
 
@@ -39,6 +45,8 @@ function defaultRule(section: SectionId): SectionRule {
 export const DEFAULT_SETTINGS: Readonly<FocusSettings> = Object.freeze({
   schemaVersion: SETTINGS_SCHEMA_VERSION,
   enabled: true,
+  sites: Object.freeze({}),
+  targets: Object.freeze({}),
   sectionRules: Object.freeze(
     Object.fromEntries(
       SECTION_IDS.map((section) => [section, Object.freeze(defaultRule(section))])
@@ -58,6 +66,23 @@ export const DEFAULT_SETTINGS: Readonly<FocusSettings> = Object.freeze({
     hiddenElements: DEFAULT_HIDDEN_ELEMENTS,
     videoCards: Object.freeze({ enabled: false, keywords: [], regexPatterns: [] }),
     slashToSearch: true
+  }),
+  legacyCapsules: Object.freeze({
+    bilibili: Object.freeze({
+      schemaVersion: 2 as const,
+      sectionRules: Object.freeze(
+        Object.fromEntries(
+          SECTION_IDS.map((section) => [section, Object.freeze(defaultRule(section))])
+        ) as Record<SectionId, SectionRule>
+      ),
+      planMode: Object.freeze({ enabled: false, watchDurationMinutes: 45 }),
+      contentFilters: Object.freeze({
+        enabled: true,
+        hiddenElements: DEFAULT_HIDDEN_ELEMENTS,
+        videoCards: Object.freeze({ enabled: false, keywords: [], regexPatterns: [] }),
+        slashToSearch: true
+      })
+    })
   })
 });
 
@@ -74,6 +99,8 @@ export function mergeSettings(
     ...patch,
     schemaVersion: SETTINGS_SCHEMA_VERSION,
     enabled: patch.enabled ?? base.enabled,
+    sites: { ...base.sites },
+    targets: { ...base.targets },
     sectionRules: { ...base.sectionRules },
     temporaryAccess: {
       ...base.temporaryAccess,
@@ -94,8 +121,29 @@ export function mergeSettings(
         ...base.contentFilters.videoCards,
         ...(patch.contentFilters?.videoCards ?? {})
       }
-    }
+    },
+    legacyCapsules: base.legacyCapsules
   };
+
+  for (const [siteId, sitePatch] of Object.entries(patch.sites ?? {})) {
+    const current = base.sites[siteId];
+    if (current && sitePatch) merged.sites[siteId] = { ...current, ...sitePatch };
+  }
+  for (const [targetId, targetPatch] of Object.entries(patch.targets ?? {})) {
+    const current = base.targets[targetId];
+    if (!current || !targetPatch) continue;
+    merged.targets[targetId] = {
+      ...current,
+      ...targetPatch,
+      schedules: targetPatch.schedules
+        ? targetPatch.schedules.map((rule) => ({ ...rule, days: [...(rule.days ?? [])] }))
+        : current.schedules.map(cloneSchedule),
+      temporaryAccess: {
+        ...current.temporaryAccess,
+        ...(targetPatch.temporaryAccess ?? {})
+      }
+    } as SiteTargetSettings;
+  }
 
   for (const section of SECTION_IDS) {
     const rulePatch = patch.sectionRules?.[section];
@@ -120,6 +168,15 @@ export function mergeSettings(
     };
   }
 
+  merged.legacyCapsules = {
+    bilibili: {
+      schemaVersion: 2,
+      sectionRules: merged.sectionRules,
+      planMode: merged.planMode,
+      contentFilters: merged.contentFilters
+    }
+  };
+
   return normalizeSettings(merged);
 }
 
@@ -131,7 +188,13 @@ export function normalizeSettings(value: unknown): FocusSettings {
   const defaults = createUnsafeDefaultSettings();
   if (!isRecord(value)) return defaults;
 
-  const rawRules = isRecord(value.sectionRules) ? value.sectionRules : {};
+  const rawCapsules = isRecord(value.legacyCapsules) ? value.legacyCapsules : {};
+  const rawBilibili = isRecord(rawCapsules.bilibili) ? rawCapsules.bilibili : value;
+  const rawRules = isRecord(value.sectionRules)
+    ? value.sectionRules
+    : isRecord(rawBilibili.sectionRules)
+      ? rawBilibili.sectionRules
+      : {};
   const sectionRules = {} as Record<SectionId, SectionRule>;
 
   for (const section of SECTION_IDS) {
@@ -156,22 +219,112 @@ export function normalizeSettings(value: unknown): FocusSettings {
     maxUsesPerDay: clampInteger(rawAccess.maxUsesPerDay, 0, 50, 3)
   };
 
-  const rawPlanMode = isRecord(value.planMode) ? value.planMode : {};
+  const rawPlanMode = isRecord(value.planMode)
+    ? value.planMode
+    : isRecord(rawBilibili.planMode)
+      ? rawBilibili.planMode
+      : {};
   const planMode = {
     enabled: typeof rawPlanMode.enabled === "boolean" ? rawPlanMode.enabled : false,
     watchDurationMinutes: clampInteger(rawPlanMode.watchDurationMinutes, 1, 360, 45)
   };
 
-  const contentFilters = normalizeContentFilters(value.contentFilters, defaults.contentFilters);
+  const contentFilters = normalizeContentFilters(
+    value.contentFilters ?? rawBilibili.contentFilters,
+    defaults.contentFilters
+  );
+  const { sites, targets } = normalizeManagedConfiguration(value.sites, value.targets);
 
   return {
     schemaVersion: SETTINGS_SCHEMA_VERSION,
     enabled: typeof value.enabled === "boolean" ? value.enabled : defaults.enabled,
+    sites,
+    targets,
     sectionRules,
     temporaryAccess,
     planMode,
-    contentFilters
+    contentFilters,
+    legacyCapsules: {
+      bilibili: { schemaVersion: 2, sectionRules, planMode, contentFilters }
+    }
   };
+}
+
+function normalizeManagedConfiguration(
+  sitesValue: unknown,
+  targetsValue: unknown
+): { sites: Record<SiteId, ManagedSite>; targets: Record<TargetId, SiteTargetSettings> } {
+  const sites: Record<SiteId, ManagedSite> = {};
+  const targets: Record<TargetId, SiteTargetSettings> = {};
+  const rawSites = isRecord(sitesValue) ? sitesValue : {};
+  const rawTargets = isRecord(targetsValue) ? targetsValue : {};
+
+  for (const [siteId, rawValue] of Object.entries(rawSites).slice(0, MAX_MANAGED_SITES)) {
+    if (!isStableId(siteId) || !isRecord(rawValue)) continue;
+    const origin = normalizeOrigin(rawValue.origin);
+    if (!origin) continue;
+    const createdAt = normalizeTimestamp(rawValue.createdAt);
+    const updatedAt = normalizeTimestamp(rawValue.updatedAt, createdAt);
+    sites[siteId] = {
+      id: siteId,
+      origin,
+      hostname: new URL(origin).hostname,
+      label: normalizeLabel(rawValue.label, new URL(origin).hostname),
+      enabled: typeof rawValue.enabled === "boolean" ? rawValue.enabled : true,
+      targetIds: [],
+      createdAt,
+      updatedAt
+    };
+  }
+
+  for (const [targetId, rawValue] of Object.entries(rawTargets).slice(0, MAX_TARGETS)) {
+    if (!isStableId(targetId) || !isRecord(rawValue) || !isStableId(rawValue.siteId)) continue;
+    const site = sites[rawValue.siteId];
+    if (!site) continue;
+    const rawAccess = isRecord(rawValue.temporaryAccess) ? rawValue.temporaryAccess : {};
+    const target: SiteTargetSettings = {
+      id: targetId,
+      siteId: site.id,
+      label: normalizeLabel(rawValue.label, site.label),
+      enabled: typeof rawValue.enabled === "boolean" ? rawValue.enabled : true,
+      dailyLimitMinutes: normalizeDailyLimit(rawValue.dailyLimitMinutes),
+      schedules: Array.isArray(rawValue.schedules)
+        ? rawValue.schedules
+            .slice(0, MAX_TIME_ACCESS_RULES)
+            .map(normalizeSchedule)
+            .filter(isDefined)
+        : [],
+      temporaryAccess: {
+        enabled: typeof rawAccess.enabled === "boolean" ? rawAccess.enabled : true,
+        durationMinutes: clampInteger(rawAccess.durationMinutes, 1, 60, 5),
+        maxUsesPerDay: clampInteger(rawAccess.maxUsesPerDay, 0, 50, 3)
+      },
+      ...(isStableId(rawValue.moduleId) ? { moduleId: rawValue.moduleId } : {}),
+      ...(isStableId(rawValue.moduleSectionId)
+        ? { moduleSectionId: rawValue.moduleSectionId }
+        : {}),
+      ...(isStableId(rawValue.moduleTargetId) ? { moduleTargetId: rawValue.moduleTargetId } : {}),
+      ...(typeof rawValue.moduleEnabled === "boolean"
+        ? { moduleEnabled: rawValue.moduleEnabled }
+        : {})
+    };
+    targets[targetId] = target;
+    site.targetIds.push(targetId);
+  }
+  for (const [siteId, rawValue] of Object.entries(rawSites).slice(0, MAX_MANAGED_SITES)) {
+    const site = sites[siteId];
+    if (!site || !isRecord(rawValue) || !Array.isArray(rawValue.targetIds)) continue;
+    for (const targetId of rawValue.targetIds.slice(0, MAX_TARGETS)) {
+      if (
+        isStableId(targetId) &&
+        targets[targetId]?.moduleId &&
+        !site.targetIds.includes(targetId)
+      ) {
+        site.targetIds.push(targetId);
+      }
+    }
+  }
+  return { sites, targets };
 }
 
 function normalizeContentFilters(
@@ -260,6 +413,22 @@ function cloneSettings(settings: Readonly<FocusSettings>): FocusSettings {
   return {
     schemaVersion: SETTINGS_SCHEMA_VERSION,
     enabled: settings.enabled,
+    sites: Object.fromEntries(
+      Object.entries(settings.sites).map(([id, site]) => [
+        id,
+        { ...site, targetIds: [...site.targetIds] }
+      ])
+    ),
+    targets: Object.fromEntries(
+      Object.entries(settings.targets).map(([id, target]) => [
+        id,
+        {
+          ...target,
+          schedules: target.schedules.map(cloneSchedule),
+          temporaryAccess: { ...target.temporaryAccess }
+        }
+      ])
+    ),
     sectionRules,
     temporaryAccess: { ...settings.temporaryAccess },
     planMode: { ...settings.planMode },
@@ -271,6 +440,22 @@ function cloneSettings(settings: Readonly<FocusSettings>): FocusSettings {
         keywords: [...settings.contentFilters.videoCards.keywords],
         regexPatterns: [...settings.contentFilters.videoCards.regexPatterns]
       }
+    },
+    legacyCapsules: {
+      bilibili: {
+        schemaVersion: 2,
+        sectionRules,
+        planMode: { ...settings.planMode },
+        contentFilters: {
+          ...settings.contentFilters,
+          hiddenElements: { ...settings.contentFilters.hiddenElements },
+          videoCards: {
+            ...settings.contentFilters.videoCards,
+            keywords: [...settings.contentFilters.videoCards.keywords],
+            regexPatterns: [...settings.contentFilters.videoCards.regexPatterns]
+          }
+        }
+      }
     }
   };
 }
@@ -281,6 +466,8 @@ function createUnsafeDefaultSettings(): FocusSettings {
   return {
     schemaVersion: SETTINGS_SCHEMA_VERSION,
     enabled: true,
+    sites: {},
+    targets: {},
     sectionRules,
     temporaryAccess: { enabled: true, durationMinutes: 5, maxUsesPerDay: 3 },
     planMode: { enabled: false, watchDurationMinutes: 45 },
@@ -289,8 +476,40 @@ function createUnsafeDefaultSettings(): FocusSettings {
       hiddenElements: { ...DEFAULT_HIDDEN_ELEMENTS },
       videoCards: { enabled: false, keywords: [], regexPatterns: [] },
       slashToSearch: true
-    }
+    },
+    legacyCapsules: {}
   };
+}
+
+function normalizeOrigin(value: unknown): string | null {
+  if (typeof value !== "string" || value.length > 2_048) return null;
+  try {
+    const url = new URL(value);
+    if ((url.protocol !== "http:" && url.protocol !== "https:") || url.username || url.password) {
+      return null;
+    }
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeLabel(value: unknown, fallback: string): string {
+  if (typeof value !== "string") return fallback.slice(0, 80);
+  return value.trim().slice(0, 80) || fallback.slice(0, 80);
+}
+
+function normalizeTimestamp(value: unknown, fallback = Date.now()): number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : fallback;
+}
+
+export function isStableId(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 128 &&
+    /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value)
+  );
 }
 
 function cloneSchedule(schedule: TimeAccessRule): TimeAccessRule {

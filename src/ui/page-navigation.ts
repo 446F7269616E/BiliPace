@@ -50,7 +50,7 @@ export function createPageNavigation({
       createBrand(),
       element("nav", {
         className: "app-navigation__pages",
-        attrs: { "aria-label": "BiliPace 主导航" },
+        attrs: { "aria-label": "Hourleaf 主导航" },
         children: pageLinks
       }),
       actionNodes.length > 0
@@ -67,12 +67,12 @@ export function createPageNavigation({
 function createBrand(): HTMLAnchorElement {
   return element("a", {
     className: "brand app-navigation__brand",
-    attrs: { href: "dashboard.html", "aria-label": "BiliPace 仪表盘" },
+    attrs: { href: "dashboard.html", "aria-label": "Hourleaf 仪表盘" },
     children: [
-      element("span", { className: "brand__mark", children: [icon("focus")] }),
+      element("span", { className: "brand__mark", children: [icon("leaf")] }),
       element("span", {
         className: "brand__meta",
-        children: [element("span", { text: "BiliPace" }), element("small", { text: "哔哩节拍" })]
+        children: [element("span", { text: "Hourleaf" }), element("small", { text: "专注每一刻" })]
       })
     ]
   });

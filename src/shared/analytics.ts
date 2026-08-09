@@ -4,6 +4,7 @@ import {
   type DailyUsage,
   type SectionId,
   type UsagePeriod,
+  type TargetId,
   type UsageSummary
 } from "./types";
 
@@ -13,7 +14,7 @@ export class AnalyticsService {
   constructor(private readonly repository = new RawUsageRepository()) {}
 
   /** Records an elapsed interval and splits it correctly if it crosses local midnight. */
-  async recordInterval(section: SectionId, startMs: number, endMs: number): Promise<void> {
+  async recordInterval(targetId: TargetId, startMs: number, endMs: number): Promise<void> {
     if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return;
 
     await this.repository.update((store) => {
@@ -29,7 +30,9 @@ export class AnalyticsService {
         const seconds = (segmentEnd - cursor) / 1000;
         const date = formatLocalDate(cursorDate);
         const day = store.days[date] ?? createEmptyDay(date);
-        day.bySection[section] += seconds;
+        day.byTarget[targetId] = (day.byTarget[targetId] ?? 0) + seconds;
+        const legacySection = legacySectionForTarget(targetId);
+        if (legacySection) day.bySection[legacySection] += seconds;
         store.days[date] = day;
         cursor = segmentEnd;
       }
@@ -42,6 +45,7 @@ export class AnalyticsService {
     const store = await this.repository.get();
     const { start, end } = getPeriodRange(period, anchor);
     const bySection = createEmptySections();
+    const byTarget: Record<TargetId, number> = {};
     const byDay: DailyUsage[] = [];
 
     for (const date of iterateDates(start, end)) {
@@ -50,21 +54,31 @@ export class AnalyticsService {
       const day = stored
         ? {
             date: key,
+            byTarget: Object.fromEntries(
+              Object.entries(stored.byTarget).map(([targetId, seconds]) => [
+                targetId,
+                Math.round(seconds)
+              ])
+            ),
             bySection: Object.fromEntries(
               SECTION_IDS.map((section) => [section, Math.round(stored.bySection[section])])
             ) as Record<SectionId, number>
           }
         : createEmptyDay(key);
       byDay.push(day);
+      for (const [targetId, seconds] of Object.entries(day.byTarget)) {
+        byTarget[targetId] = (byTarget[targetId] ?? 0) + seconds;
+      }
       for (const section of SECTION_IDS) bySection[section] += day.bySection[section];
     }
 
-    const totalSeconds = SECTION_IDS.reduce((total, section) => total + bySection[section], 0);
+    const totalSeconds = Object.values(byTarget).reduce((total, seconds) => total + seconds, 0);
     return {
       period,
       startDate: formatLocalDate(start),
       endDate: formatLocalDate(end),
       totalSeconds,
+      byTarget,
       bySection,
       byDay
     };
@@ -114,11 +128,17 @@ export function parseLocalDate(value: string | undefined): Date | null {
 }
 
 export function createEmptyDay(date: string): DailyUsage {
-  return { date, bySection: createEmptySections() };
+  return { date, byTarget: {}, bySection: createEmptySections() };
 }
 
 function createEmptySections(): Record<SectionId, number> {
   return { home: 0, dynamic: 0, popular: 0, video: 0, live: 0, bangumi: 0, search: 0 };
+}
+
+function legacySectionForTarget(targetId: TargetId): SectionId | null {
+  const direct = SECTION_IDS.find((section) => section === targetId);
+  if (direct) return direct;
+  return SECTION_IDS.find((section) => targetId === `legacy:bilibili:${section}`) ?? null;
 }
 
 function* iterateDates(start: Date, end: Date): Generator<Date> {

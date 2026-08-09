@@ -6,8 +6,7 @@ import {
   type ExtensionApi,
   type ExtensionTab
 } from "../shared/browser";
-import type { TrackingStatus } from "../shared/types";
-import { classifyBilibiliUrl } from "../shared/url";
+import type { SectionId, SiteId, TargetId, TrackingStatus } from "../shared/types";
 import { AnalyticsService } from "../shared/analytics";
 import type { SessionEvent } from "../shared/messages";
 
@@ -19,12 +18,26 @@ export interface IntervalHandle {
   stop(): void;
 }
 
-export type UsageEligibility = (url: string, at: number) => boolean | Promise<boolean>;
+export type UsageEligibility = (
+  url: string,
+  at: number,
+  targetId?: TargetId
+) => boolean | Promise<boolean>;
+export interface TrackingTarget {
+  targetId: TargetId;
+  siteId?: SiteId;
+  legacySection?: SectionId;
+}
+export type TrackingTargetResolver = (
+  url: string,
+  requestedTargetId?: TargetId
+) => TrackingTarget | null | Promise<TrackingTarget | null>;
 
 export class UsageTracker {
   private readonly activeTabByWindow = new Map<number, ExtensionTab>();
   private readonly sessionByTab = new Map<number, string>();
   private readonly visibleByTab = new Map<number, boolean>();
+  private readonly targetByTab = new Map<number, TargetId>();
   private currentTab: ExtensionTab | null = null;
   private focusedWindowId: number | null = null;
   private windowFocused = true;
@@ -36,7 +49,8 @@ export class UsageTracker {
     private readonly analytics = new AnalyticsService(),
     private readonly now: () => number = Date.now,
     private readonly api: ExtensionApi | null = getExtensionApi(),
-    private readonly isUsageAllowed: UsageEligibility = () => true
+    private readonly isUsageAllowed: UsageEligibility = () => true,
+    private readonly resolveTarget: TrackingTargetResolver = () => null
   ) {
     this.lastTickAt = this.now();
   }
@@ -64,15 +78,24 @@ export class UsageTracker {
 
   async getStatus(): Promise<TrackingStatus> {
     const url = this.currentTab?.url ?? "";
-    const section = classifyBilibiliUrl(url);
+    const target = await Promise.resolve(
+      this.resolveTarget(
+        url,
+        this.currentTab?.id === undefined ? undefined : this.targetByTab.get(this.currentTab.id)
+      )
+    ).catch(() => null);
     const pageVisible =
       this.currentTab?.id !== undefined && this.visibleByTab.get(this.currentTab.id) === true;
-    const candidate = section !== null && pageVisible && this.windowFocused && this.isUserActive();
+    const candidate = target !== null && pageVisible && this.windowFocused && this.isUserActive();
     const isTracking = candidate
-      ? await Promise.resolve(this.isUsageAllowed(url, this.now())).catch(() => false)
+      ? await Promise.resolve(this.isUsageAllowed(url, this.now(), target?.targetId)).catch(
+          () => false
+        )
       : false;
     return {
-      section,
+      ...(target?.siteId ? { siteId: target.siteId } : {}),
+      ...(target ? { targetId: target.targetId } : {}),
+      section: target?.legacySection ?? null,
       isTracking,
       idleState: this.idleState,
       windowFocused: this.windowFocused
@@ -86,16 +109,22 @@ export class UsageTracker {
     this.lastTickAt = end;
 
     const url = this.currentTab?.url ?? "";
-    const section = classifyBilibiliUrl(url);
     const pageVisible =
       this.currentTab?.id !== undefined && this.visibleByTab.get(this.currentTab.id) === true;
-    const eligible = section !== null && pageVisible && this.windowFocused && this.isUserActive();
+    const eligible = pageVisible && this.windowFocused && this.isUserActive();
     if (!eligible || end <= rawStart) return Promise.resolve();
 
     // Browser background contexts can be suspended. Never count a long sleep as active usage.
     const start = Math.max(rawStart, end - MAX_RECORDABLE_GAP_MS);
-    return Promise.resolve(this.isUsageAllowed(url, end))
-      .then((allowed) => (allowed ? this.analytics.recordInterval(section, start, end) : undefined))
+    const requestedTargetId =
+      this.currentTab?.id === undefined ? undefined : this.targetByTab.get(this.currentTab.id);
+    return Promise.all([
+      Promise.resolve(this.resolveTarget(url, requestedTargetId)),
+      Promise.resolve(this.isUsageAllowed(url, end, requestedTargetId))
+    ])
+      .then(([target, allowed]) =>
+        target && allowed ? this.analytics.recordInterval(target.targetId, start, end) : undefined
+      )
       .catch(() => undefined);
   }
 
@@ -104,7 +133,8 @@ export class UsageTracker {
     event: SessionEvent,
     sessionId: string,
     url: string,
-    visibility: "visible" | "hidden"
+    visibility: "visible" | "hidden",
+    targetId?: TargetId
   ): boolean {
     const tabId = tab?.id;
     if (tabId === undefined) return false;
@@ -123,11 +153,13 @@ export class UsageTracker {
     if (event === "stop") {
       this.visibleByTab.set(tabId, false);
       this.sessionByTab.delete(tabId);
+      this.targetByTab.delete(tabId);
       return true;
     }
 
     this.sessionByTab.set(tabId, sessionId);
     this.visibleByTab.set(tabId, visibility === "visible");
+    if (targetId) this.targetByTab.set(tabId, targetId);
     const updatedTab = { ...tab, id: tabId, url };
     if (tab?.windowId !== undefined) this.activeTabByWindow.set(tab.windowId, updatedTab);
     if (this.currentTab?.id === tabId || tab?.active) this.currentTab = updatedTab;
@@ -162,6 +194,7 @@ export class UsageTracker {
     this.api?.tabs?.onRemoved?.addListener((tabId) => {
       this.sessionByTab.delete(tabId);
       this.visibleByTab.delete(tabId);
+      this.targetByTab.delete(tabId);
       if (this.currentTab?.id !== tabId) return;
       void this.flush();
       this.currentTab = null;

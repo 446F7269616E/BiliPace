@@ -1,8 +1,29 @@
 # Changelog
 
-All notable changes to BiliPace will be documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and releases follow [Semantic Versioning](https://semver.org/).
+All notable changes to Hourleaf will be documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and releases follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+
+## [0.5.0] - 2026-08-09
+
+### Added
+
+- Added user-managed rules, limits, plans and local time insights for arbitrary HTTP and HTTPS websites.
+- Added exact, on-demand website permissions and persistent dynamic content-script registration.
+- Added a bounded site-module contract and a separately built Bilibili/Ave module bundle.
+- Added site and module management to the shared Hourleaf settings experience.
+
+### Changed
+
+- Renamed the extension to Hourleaf while retaining legacy storage keys and the Firefox extension ID for upgrades.
+- Moved Bilibili routes, selectors, content filtering and video identity into the optional `hourleaf.site.bilibili` module.
+- Migrated settings, usage and temporary access to generic site/target schemas.
+- Split release artifacts into a lightweight core and reviewed module bundles without remotely executed code.
+
+### Privacy
+
+- Website access is optional and requested for the exact origin selected by the user.
+- Ordinary browsing stores only site/target identifiers, local dates and aggregate seconds; it does not persist page paths, titles or content.
 
 ## [0.4.0] - 2026-08-09
 

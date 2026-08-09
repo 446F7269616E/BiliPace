@@ -10,7 +10,9 @@ describe("settings schema", () => {
     expect(second.sectionRules.home.enabled).toBe(true);
     expect(Object.keys(first.sectionRules)).toEqual([...SECTION_IDS]);
     expect(first.enabled).toBe(true);
-    expect(first.schemaVersion).toBe(2);
+    expect(first.schemaVersion).toBe(3);
+    expect(first.sites).toEqual({});
+    expect(first.targets).toEqual({});
     expect(first.planMode).toEqual({ enabled: false, watchDurationMinutes: 45 });
   });
 
@@ -42,7 +44,7 @@ describe("settings schema", () => {
       }
     });
 
-    expect(normalized.schemaVersion).toBe(2);
+    expect(normalized.schemaVersion).toBe(3);
     expect(normalized.sectionRules.home.schedules.map((rule) => rule.effect)).toEqual([
       "block",
       "allow"

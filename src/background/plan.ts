@@ -1,4 +1,8 @@
-import { normalizePlanItemInput, type NormalizedPlanItemInput } from "../shared/plan";
+import {
+  normalizePlanItemInput,
+  normalizePlanUrl,
+  type NormalizedPlanItemInput
+} from "../shared/plan";
 import { PlanAccessRepository, PlanQueueRepository, SettingsRepository } from "../shared/storage";
 import type {
   PlanItem,
@@ -57,8 +61,8 @@ export class PlanService {
   async add(input: PlanItemInput): Promise<PlanState> {
     const normalized = requireNormalizedInput(input);
     await this.queueRepository.update((queue) => {
-      if (queue.items.some((item) => item.bvid === normalized.bvid)) {
-        throw new Error("This video is already in the plan");
+      if (queue.items.some((item) => item.url === normalized.url)) {
+        throw new Error("This page is already in the plan");
       }
       queue.items.push(createPlanItem(normalized, queue.items.length, this.now()));
     });
@@ -66,28 +70,27 @@ export class PlanService {
   }
 
   async update(id: string, patch: PlanItemPatch): Promise<PlanState> {
-    let previousBvid = "";
-    let nextBvid = "";
+    let previousUrl = "";
+    let nextUrl = "";
     await this.queueRepository.update((queue) => {
       const item = requireItem(queue.items, id);
-      previousBvid = item.bvid;
-      const changesIdentity = patch.bvid !== undefined || patch.url !== undefined;
+      previousUrl = item.url;
       const normalized = requireNormalizedInput({
-        ...(changesIdentity ? {} : { bvid: item.bvid }),
-        ...(patch.bvid !== undefined ? { bvid: patch.bvid } : {}),
+        url: patch.url ?? item.url,
+        ...(patch.bvid !== undefined ? { bvid: patch.bvid } : item.bvid ? { bvid: item.bvid } : {}),
         ...(patch.url !== undefined ? { url: patch.url } : {}),
         title: patch.title ?? item.title,
         source: patch.source ?? item.source
       });
       if (
-        queue.items.some((candidate) => candidate.id !== id && candidate.bvid === normalized.bvid)
+        queue.items.some((candidate) => candidate.id !== id && candidate.url === normalized.url)
       ) {
-        throw new Error("This video is already in the plan");
+        throw new Error("This page is already in the plan");
       }
-      nextBvid = normalized.bvid;
-      Object.assign(item, normalized);
+      nextUrl = normalized.url;
+      Object.assign(item, persistedPlanInput(normalized));
     });
-    if (previousBvid !== nextBvid) await this.clearGrantForItem(id);
+    if (previousUrl !== nextUrl) await this.clearGrantForItem(id);
     return this.getState();
   }
 
@@ -145,12 +148,13 @@ export class PlanService {
     ]);
     if (!settings.planMode.enabled) throw new Error("Plan mode is not enabled");
     const item = requireItem(queue.items, id);
-    if (item.status !== "pending")
-      throw new Error("Completed items must be restored before watching");
+    if (item.status !== "pending") throw new Error("请先将已完成项目恢复为待办");
     const grantedAt = this.now();
     const grant: PlanWatchGrant = {
       itemId: item.id,
-      bvid: item.bvid,
+      url: item.url,
+      origin: item.origin,
+      ...(item.bvid ? { bvid: item.bvid } : {}),
       grantedAt,
       expiresAt: grantedAt + settings.planMode.watchDurationMinutes * 60_000
     };
@@ -160,12 +164,13 @@ export class PlanService {
     return { state: await this.getState(), url: item.url, expiresAt: grant.expiresAt };
   }
 
-  async decideNavigation(bvid?: string): Promise<PlanNavigationDecision> {
+  async decideNavigation(url?: string, legacyIdentity?: string): Promise<PlanNavigationDecision> {
+    const navigationUrl = normalizePlanUrl(url)?.href;
     const settings = await this.settingsRepository.get();
     if (!settings.planMode.enabled) {
       return { planModeEnabled: false, allowed: true, reason: "disabled" };
     }
-    if (!bvid) {
+    if (!navigationUrl && !legacyIdentity) {
       return { planModeEnabled: true, allowed: false, reason: "not-video" };
     }
 
@@ -175,33 +180,56 @@ export class PlanService {
     ]);
     const grant = access.activeGrant;
     if (!grant) {
-      return { planModeEnabled: true, allowed: false, reason: "not-authorized", bvid };
+      return {
+        planModeEnabled: true,
+        allowed: false,
+        reason: "not-authorized",
+        ...(navigationUrl ? { url: navigationUrl } : {}),
+        ...(legacyIdentity ? { bvid: legacyIdentity } : {})
+      };
     }
     if (grant.expiresAt <= this.now()) {
       await this.accessRepository.update((store) => {
         delete store.activeGrant;
       });
-      return { planModeEnabled: true, allowed: false, reason: "expired", bvid };
+      return {
+        planModeEnabled: true,
+        allowed: false,
+        reason: "expired",
+        ...(navigationUrl ? { url: navigationUrl } : {}),
+        ...(legacyIdentity ? { bvid: legacyIdentity } : {})
+      };
     }
     const item = queue.items.find(
       (candidate) =>
         candidate.id === grant.itemId &&
-        candidate.bvid === grant.bvid &&
+        candidate.url === grant.url &&
         candidate.status === "pending"
     );
-    if (!item || grant.bvid !== bvid) {
+    const identityMatches = navigationUrl
+      ? grant.url === navigationUrl
+      : Boolean(legacyIdentity && grant.bvid === legacyIdentity);
+    if (!item || !identityMatches) {
       if (!item) {
         await this.accessRepository.update((store) => {
           delete store.activeGrant;
         });
       }
-      return { planModeEnabled: true, allowed: false, reason: "not-authorized", bvid };
+      return {
+        planModeEnabled: true,
+        allowed: false,
+        reason: "not-authorized",
+        ...(navigationUrl ? { url: navigationUrl } : {}),
+        ...(legacyIdentity ? { bvid: legacyIdentity } : {})
+      };
     }
     return {
       planModeEnabled: true,
       allowed: true,
       reason: "authorized",
-      bvid,
+      url: item.url,
+      origin: item.origin,
+      ...(item.bvid ? { bvid: item.bvid } : {}),
       expiresAt: grant.expiresAt
     };
   }
@@ -214,13 +242,13 @@ export class PlanService {
     let addedCount = 0;
     let skippedCount = 0;
     await this.queueRepository.update((queue) => {
-      const seen = new Set(queue.items.map((item) => item.bvid));
+      const seen = new Set(queue.items.map((item) => item.url));
       for (const input of normalized) {
-        if (seen.has(input.bvid) || queue.items.length >= 500) {
+        if (seen.has(input.url) || queue.items.length >= 500) {
           skippedCount += 1;
           continue;
         }
-        seen.add(input.bvid);
+        seen.add(input.url);
         queue.items.push(createPlanItem(input, queue.items.length, this.now()));
         addedCount += 1;
       }
@@ -242,7 +270,7 @@ function validGrantForQueue(
 ): PlanWatchGrant | undefined {
   if (!grant || grant.expiresAt <= now) return undefined;
   return items.some(
-    (item) => item.id === grant.itemId && item.bvid === grant.bvid && item.status === "pending"
+    (item) => item.id === grant.itemId && item.url === grant.url && item.status === "pending"
   )
     ? grant
     : undefined;
@@ -259,18 +287,30 @@ function requireNormalizedInput(
   fallbackSource?: PlanItemSource
 ): NormalizedPlanItemInput {
   const normalized = normalizePlanItemInput(input, fallbackSource);
-  if (!normalized) throw new Error("Invalid Bilibili video URL, BVID, title, or source");
+  if (!normalized) throw new Error("Invalid website URL, title, or source");
   return normalized;
 }
 
 function createPlanItem(input: NormalizedPlanItemInput, order: number, addedAt: number): PlanItem {
   return {
     id: createId(),
-    ...input,
+    ...persistedPlanInput(input),
     status: "pending",
     order,
     addedAt,
     completedAt: null
+  };
+}
+
+function persistedPlanInput(
+  input: NormalizedPlanItemInput
+): Pick<PlanItem, "url" | "origin" | "title" | "source" | "bvid"> {
+  return {
+    url: input.url,
+    origin: input.origin,
+    title: input.title,
+    source: input.source,
+    ...(input.bvid ? { bvid: input.bvid } : {})
   };
 }
 

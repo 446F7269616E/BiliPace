@@ -115,7 +115,8 @@
 }
 
 .chart-card,
-.section-breakdown {
+.section-breakdown,
+.scope-card {
   padding: var(--space-5);
 }
 
@@ -132,7 +133,8 @@
 }
 
 .chart-card__header h2,
-.section-breakdown h2 {
+.section-breakdown h2,
+.scope-card h2 {
   font-size: 16px;
   letter-spacing: -0.02em;
 }
@@ -194,7 +196,7 @@
 .chart-column__bar {
   width: 100%;
   min-height: 3px;
-  background: linear-gradient(180deg, #fa7ca8, var(--color-brand));
+  background: linear-gradient(180deg, #73c6a6, var(--color-brand));
   border-radius: 7px 7px 3px 3px;
   box-shadow: 0 4px 10px color-mix(in srgb, var(--color-brand) 16%, transparent);
   transition:
@@ -242,6 +244,49 @@
 .dashboard-aside {
   display: grid;
   gap: var(--space-5);
+}
+
+.scope-card__rows {
+  display: grid;
+  gap: 10px;
+  margin-top: var(--space-4);
+}
+
+.scope-card__rows h3 {
+  margin: 4px 0 0;
+  color: var(--color-text-faint);
+  font-size: 10px;
+  font-weight: 720;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.scope-card__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: var(--space-3);
+  padding-bottom: 9px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.scope-card__row:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.scope-card__empty,
+.scope-card__row span {
+  color: var(--color-text-faint);
+  font-size: 11px;
+}
+
+.scope-card__row strong {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 680;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .section-totals {

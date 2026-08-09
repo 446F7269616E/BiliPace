@@ -111,9 +111,9 @@ svg {
   height: 34px;
   place-items: center;
   color: #fff;
-  background: linear-gradient(145deg, #ff76a7, #d73c76);
+  background: linear-gradient(145deg, #4ba481, #21644f);
   border-radius: 11px;
-  box-shadow: 0 7px 16px rgb(213 56 113 / 22%);
+  box-shadow: 0 7px 16px rgb(39 120 91 / 22%);
 }
 
 .brand__meta {
@@ -418,6 +418,29 @@ svg {
 }
 
 .badge--warning {
+  color: var(--color-warning);
+  background: var(--color-warning-soft);
+}
+
+.status-chip {
+  display: inline-flex;
+  min-height: 24px;
+  align-items: center;
+  padding: 3px 9px;
+  color: var(--color-text-muted);
+  background: var(--color-surface-soft);
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 680;
+  white-space: nowrap;
+}
+
+.status-chip--success {
+  color: var(--color-success);
+  background: var(--color-success-soft);
+}
+
+.status-chip--warning {
   color: var(--color-warning);
   background: var(--color-warning-soft);
 }

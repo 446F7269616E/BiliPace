@@ -1,37 +1,54 @@
 import { AnalyticsService, formatLocalDate } from "./analytics";
-import type { FocusSettings } from "./types";
-import { shouldBlockSection } from "./schedule";
+import { shouldBlockTarget } from "./schedule";
 import { SettingsRepository, TemporaryAccessRepository } from "./storage";
-import type { PageDecision, SectionId } from "./types";
-import { classifyBilibiliUrl } from "./url";
+import type {
+  FocusSettings,
+  PageDecision,
+  SectionId,
+  SiteId,
+  SiteTargetSettings,
+  TargetId
+} from "./types";
 
 const ACCESS_HISTORY_DAYS = 35;
+
+export interface FocusTarget {
+  siteId?: SiteId;
+  target: SiteTargetSettings;
+  legacySection?: SectionId;
+}
+
+export type FocusTargetResolver = (
+  url: string,
+  requestedTargetId?: TargetId
+) => FocusTarget | null | Promise<FocusTarget | null>;
 
 export class FocusDecisionService {
   constructor(
     private readonly settingsRepository = new SettingsRepository(),
     private readonly accessRepository = new TemporaryAccessRepository(),
-    private readonly analytics = new AnalyticsService()
+    private readonly analytics = new AnalyticsService(),
+    private readonly targetResolver?: FocusTargetResolver
   ) {}
 
-  async decide(url: string, now = new Date()): Promise<PageDecision> {
-    const section = classifyBilibiliUrl(url);
-    if (!section) return unmanagedDecision();
-
-    const [settings, access] = await Promise.all([
-      this.settingsRepository.get(),
-      this.accessRepository.get()
-    ]);
-    const baseDecision = await this.evaluateBaseDecision(settings, section, now);
+  async decide(url: string, now = new Date(), requestedTargetId?: TargetId): Promise<PageDecision> {
+    const settings = await this.settingsRepository.get();
+    const resolved = await this.resolveTarget(settings, url, requestedTargetId);
+    if (!resolved) return unmanagedDecision();
+    const access = await this.accessRepository.get();
+    const baseDecision = await this.evaluateBaseDecision(settings, resolved.target, now);
     const today = formatLocalDate(now);
-    const uses = access.usesByDate[today] ?? 0;
-    const usesRemaining = Math.max(0, settings.temporaryAccess.maxUsesPerDay - uses);
-    const canRequest =
-      baseDecision.blocked && settings.temporaryAccess.enabled && usesRemaining > 0;
+    const uses =
+      access.usesByDateAndTarget[today]?.[resolved.target.id] ??
+      (resolved.legacySection ? (access.usesByDate[today] ?? 0) : 0);
+    const policy = resolved.target.temporaryAccess;
+    const usesRemaining = Math.max(0, policy.maxUsesPerDay - uses);
+    const canRequest = baseDecision.blocked && policy.enabled && usesRemaining > 0;
+    const identity = decisionIdentity(resolved);
 
     if (!baseDecision.blocked) {
       return {
-        section,
+        ...identity,
         blocked: false,
         reason: baseDecision.reason,
         canRequestTemporaryAccess: false,
@@ -39,10 +56,10 @@ export class FocusDecisionService {
       };
     }
 
-    const expiresAt = access.expiresAtBySection[section] ?? 0;
+    const expiresAt = access.expiresAtByTarget[resolved.target.id] ?? 0;
     if (expiresAt > now.getTime()) {
       return {
-        section,
+        ...identity,
         blocked: false,
         reason: "temporary-access",
         temporaryAccessExpiresAt: expiresAt,
@@ -50,9 +67,8 @@ export class FocusDecisionService {
         temporaryAccessUsesRemaining: usesRemaining
       };
     }
-
     return {
-      section,
+      ...identity,
       blocked: true,
       reason: baseDecision.reason,
       canRequestTemporaryAccess: canRequest,
@@ -60,24 +76,21 @@ export class FocusDecisionService {
     };
   }
 
-  async grant(url: string, now = new Date()): Promise<PageDecision> {
-    const section = classifyBilibiliUrl(url);
-    if (!section) return unmanagedDecision();
-
+  async grant(url: string, now = new Date(), requestedTargetId?: TargetId): Promise<PageDecision> {
     const settings = await this.settingsRepository.get();
-    const baseDecision = await this.evaluateBaseDecision(settings, section, now);
-    if (!baseDecision.blocked || !settings.temporaryAccess.enabled) {
-      return this.decide(url, now);
-    }
+    const resolved = await this.resolveTarget(settings, url, requestedTargetId);
+    if (!resolved) return unmanagedDecision();
+    const baseDecision = await this.evaluateBaseDecision(settings, resolved.target, now);
+    const policy = resolved.target.temporaryAccess;
+    if (!baseDecision.blocked || !policy.enabled) return this.decide(url, now, requestedTargetId);
 
     const today = formatLocalDate(now);
     await this.accessRepository.update((store) => {
-      const currentUses = store.usesByDate[today] ?? 0;
-      if (currentUses >= settings.temporaryAccess.maxUsesPerDay) return;
-
-      store.usesByDate[today] = currentUses + 1;
-      store.expiresAtBySection[section] =
-        now.getTime() + settings.temporaryAccess.durationMinutes * 60_000;
+      const counts = (store.usesByDateAndTarget[today] ??= {});
+      const currentUses = counts[resolved.target.id] ?? 0;
+      if (currentUses >= policy.maxUsesPerDay) return;
+      counts[resolved.target.id] = currentUses + 1;
+      store.expiresAtByTarget[resolved.target.id] = now.getTime() + policy.durationMinutes * 60_000;
 
       const cutoff = new Date(
         now.getFullYear(),
@@ -85,46 +98,71 @@ export class FocusDecisionService {
         now.getDate() - ACCESS_HISTORY_DAYS
       );
       const cutoffKey = formatLocalDate(cutoff);
-      for (const key of Object.keys(store.usesByDate)) {
-        if (key < cutoffKey) delete store.usesByDate[key];
+      for (const key of Object.keys(store.usesByDateAndTarget)) {
+        if (key < cutoffKey) delete store.usesByDateAndTarget[key];
       }
-      for (const [storedSection, expiresAt] of Object.entries(store.expiresAtBySection)) {
-        if ((expiresAt ?? 0) <= now.getTime() && storedSection !== section) {
-          delete store.expiresAtBySection[storedSection as SectionId];
+      for (const [targetId, expiresAt] of Object.entries(store.expiresAtByTarget)) {
+        if ((expiresAt ?? 0) <= now.getTime() && targetId !== resolved.target.id) {
+          delete store.expiresAtByTarget[targetId];
         }
       }
     });
-
-    return this.decide(url, now);
+    return this.decide(url, now, requestedTargetId);
   }
 
   private async evaluateBaseDecision(
     settings: FocusSettings,
-    section: SectionId,
+    target: SiteTargetSettings,
     now: Date
   ): Promise<{
     blocked: boolean;
     reason: "focus-disabled" | "rule-disabled" | "outside-schedule" | "daily-limit" | "blocked";
   }> {
-    const scheduleDecision = shouldBlockSection(settings, section, now);
+    const scheduleDecision = shouldBlockTarget(settings.enabled, target, now);
     if (
       scheduleDecision.reason === "focus-disabled" ||
       scheduleDecision.reason === "rule-disabled"
     ) {
       return scheduleDecision;
     }
-
     if (scheduleDecision.explicit) return scheduleDecision;
-
-    const dailyLimitMinutes = settings.sectionRules[section].dailyLimitMinutes;
-    // With a quota configured, an empty schedule means "quota only". Without a
-    // quota, the established empty-schedule behavior remains an all-day block.
-    if (dailyLimitMinutes === null) return scheduleDecision;
+    if (target.dailyLimitMinutes === null) return scheduleDecision;
     const usage = await this.analytics.summarize("day", now);
-    return usage.bySection[section] >= dailyLimitMinutes * 60
+    return (usage.byTarget[target.id] ?? 0) >= target.dailyLimitMinutes * 60
       ? { blocked: true, reason: "daily-limit" }
       : { blocked: false, reason: "outside-schedule" };
   }
+
+  private async resolveTarget(
+    settings: FocusSettings,
+    url: string,
+    requestedTargetId?: TargetId
+  ): Promise<FocusTarget | null> {
+    if (this.targetResolver) return this.targetResolver(url, requestedTargetId);
+    let origin: string;
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+      origin = parsed.origin;
+    } catch {
+      return null;
+    }
+    const site = Object.values(settings.sites).find((candidate) => candidate.origin === origin);
+    if (!site || !site.enabled) return null;
+    const targetId = requestedTargetId ?? site.targetIds[0];
+    const target = targetId ? settings.targets[targetId] : undefined;
+    return target && target.siteId === site.id ? { siteId: site.id, target } : null;
+  }
+}
+
+function decisionIdentity(
+  target: FocusTarget
+): Pick<PageDecision, "siteId" | "targetId" | "section"> {
+  return {
+    ...(target.siteId ? { siteId: target.siteId } : {}),
+    targetId: target.target.id,
+    section: target.legacySection ?? null
+  };
 }
 
 function unmanagedDecision(): PageDecision {

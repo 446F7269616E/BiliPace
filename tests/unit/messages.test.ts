@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isBilibiliUrl, parseMessageRequest } from "../../src/shared/messages";
+import { isHttpUrl, parseMessageRequest } from "../../src/shared/messages";
 
 describe("message boundary", () => {
   it("accepts a bounded versioned request", () => {
@@ -16,7 +16,7 @@ describe("message boundary", () => {
     });
   });
 
-  it("rejects malformed, unknown and off-site messages", () => {
+  it("rejects malformed, unknown and unsupported URL messages", () => {
     expect(
       parseMessageRequest({ version: 2, requestId: "x", type: "GET_SETTINGS", payload: {} })
     ).toBeNull();
@@ -25,10 +25,11 @@ describe("message boundary", () => {
         version: 1,
         requestId: "x",
         type: "GET_PAGE_DECISION",
-        payload: { url: "https://example.com" }
+        payload: { url: "chrome://settings" }
       })
     ).toBeNull();
-    expect(isBilibiliUrl("https://bilibili.com.evil.example/")).toBe(false);
+    expect(isHttpUrl("https://example.com/")).toBe(true);
+    expect(isHttpUrl("file:///private/data")).toBe(false);
   });
 
   it("strictly validates plan mutations and navigation identities", () => {
@@ -63,7 +64,7 @@ describe("message boundary", () => {
     });
 
     for (const payload of [
-      { url: "https://example.com/video/BV1xx411c7mD" },
+      { url: "file:///private/data" },
       { bvid: "BV-short" },
       { url: "https://www.bilibili.com/video/BV1xx411c7mD", unknown: true },
       { url: "https://www.bilibili.com/video/BV1xx411c7mD", title: "x".repeat(201) }

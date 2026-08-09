@@ -9,13 +9,15 @@ describe("usage tracker", () => {
     const tracker = new UsageTracker(
       { recordInterval } as unknown as AnalyticsService,
       () => now,
-      null
+      null,
+      () => true,
+      () => ({ targetId: "target:test" })
     );
     const tab = {
       id: 7,
       active: true,
       windowId: 1,
-      url: "https://www.bilibili.com/video/BV1test"
+      url: "https://example.com/focus"
     };
 
     expect(tracker.handleSessionUpdate(tab, "start", "session-123", tab.url, "visible")).toBe(true);
@@ -23,14 +25,14 @@ describe("usage tracker", () => {
     await tracker.flush();
     await tracker.flush();
     expect(recordInterval).toHaveBeenCalledTimes(1);
-    expect(recordInterval).toHaveBeenCalledWith("video", 0, 15_000);
+    expect(recordInterval).toHaveBeenCalledWith("target:test", 0, 15_000);
 
     now = 20_000;
     tracker.handleSessionUpdate(tab, "heartbeat", "session-123", tab.url, "hidden");
     now = 35_000;
     await tracker.flush();
     expect(recordInterval).toHaveBeenCalledTimes(2);
-    expect(recordInterval).toHaveBeenLastCalledWith("video", 15_000, 20_000);
+    expect(recordInterval).toHaveBeenLastCalledWith("target:test", 15_000, 20_000);
   });
 
   it("rejects stale events from a replaced session", () => {
@@ -39,7 +41,7 @@ describe("usage tracker", () => {
       () => 0,
       null
     );
-    const tab = { id: 1, active: true, url: "https://www.bilibili.com/" };
+    const tab = { id: 1, active: true, url: "https://example.com/" };
     tracker.handleSessionUpdate(tab, "start", "session-new", tab.url, "visible");
     expect(tracker.handleSessionUpdate(tab, "stop", "session-old", tab.url, "hidden")).toBe(false);
   });
@@ -51,13 +53,14 @@ describe("usage tracker", () => {
       { recordInterval } as unknown as AnalyticsService,
       () => now,
       null,
-      () => false
+      () => false,
+      () => ({ targetId: "target:test" })
     );
     const tab = {
       id: 9,
       active: true,
       windowId: 1,
-      url: "https://www.bilibili.com/video/BV1xx411c7mD"
+      url: "https://example.com/focus"
     };
     tracker.handleSessionUpdate(tab, "start", "session-plan", tab.url, "visible");
     now = 15_000;

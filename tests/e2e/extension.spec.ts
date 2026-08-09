@@ -14,6 +14,7 @@ test("packaged manifest stays inside the reviewed permission budget", () => {
     manifest_version?: number;
     permissions?: string[];
     host_permissions?: string[];
+    optional_host_permissions?: string[];
     content_scripts?: Array<{ matches?: string[] }>;
     web_accessible_resources?: Array<{ resources?: string[]; matches?: string[] }>;
     content_security_policy?: { extension_pages?: string };
@@ -33,27 +34,25 @@ test("packaged manifest stays inside the reviewed permission budget", () => {
       "webRequestBlocking"
     ])
   );
-  const reviewedHosts = [
-    "https://live.bilibili.com/*",
-    "https://search.bilibili.com/*",
-    "https://t.bilibili.com/*",
-    "https://www.bilibili.com/*"
-  ];
-  expect([...(manifest.host_permissions ?? [])].sort()).toEqual(reviewedHosts);
-  expect(manifest.content_scripts?.[0]?.matches).toEqual(["https://*.bilibili.com/*"]);
+  expect(manifest.host_permissions ?? []).toEqual([]);
+  expect([...(manifest.optional_host_permissions ?? [])].sort()).toEqual([
+    "http://*/*",
+    "https://*/*"
+  ]);
+  expect(manifest.content_scripts).toBeUndefined();
   expect(manifest.web_accessible_resources).toEqual([
-    { resources: ["plan.html"], matches: ["https://*.bilibili.com/*"] }
+    { resources: ["plan.html"], matches: ["http://*/*", "https://*/*"] }
   ]);
   expect(manifest.content_security_policy?.extension_pages).toContain("script-src 'self'");
   expect(manifest.content_security_policy?.extension_pages).not.toMatch(/https?:|unsafe-eval/);
 });
 
 for (const [fileName, title] of [
-  ["popup.html", "BiliPace"],
-  ["dashboard.html", "仪表盘 · BiliPace"],
-  ["plan.html", "计划 · BiliPace"],
-  ["options.html", "配置 · BiliPace"],
-  ["home.html", "设置 · BiliPace"]
+  ["popup.html", "Hourleaf"],
+  ["dashboard.html", "仪表盘 · Hourleaf"],
+  ["plan.html", "计划 · Hourleaf"],
+  ["options.html", "配置 · Hourleaf"],
+  ["home.html", "设置 · Hourleaf"]
 ] as const) {
   test(`${fileName} loads as a real MV3 extension page`, async ({ openExtensionPage }) => {
     const page = await openExtensionPage(fileName);
@@ -97,15 +96,15 @@ test("popup exposes the primary focus actions and receives a background response
   await expect(page.getByTestId("popup-manage-plan")).toBeVisible();
 });
 
-test("plan mode admits only the explicitly started video", async ({
+test("plan starts the explicitly selected website", async ({
   extensionContext,
   openExtensionPage
 }) => {
-  const bvid = "BV1xx411c7mD";
-  await extensionContext.route("https://*.bilibili.com/**", async (route) => {
+  const plannedUrl = "https://example.test/focus";
+  await extensionContext.route("https://example.test/**", async (route) => {
     await route.fulfill({
       contentType: "text/html",
-      body: '<!doctype html><html><body><h1 data-testid="fake-bilibili">Bilibili fixture</h1></body></html>'
+      body: '<!doctype html><html><body><h1 data-testid="planned-page">Planned page</h1></body></html>'
     });
   });
 
@@ -114,37 +113,21 @@ test("plan mode admits only the explicitly started video", async ({
   if (!(await planPage.getByTestId("plan-mode-toggle").isChecked())) {
     await planPage.getByTestId("plan-mode-toggle").click();
   }
-  await planPage.getByTestId("plan-add-url").fill(`https://www.bilibili.com/video/${bvid}`);
-  await planPage.getByTestId("plan-add-title").fill("端到端计划视频");
+  await planPage.getByTestId("plan-add-url").fill(plannedUrl);
+  await planPage.getByTestId("plan-add-title").fill("端到端计划页面");
   await planPage.getByTestId("plan-add-submit").click();
 
   const start = planPage.locator('[data-testid^="plan-start-"]').first();
   await expect(start).toBeVisible();
   await start.click();
-  await expect(planPage).toHaveURL(`https://www.bilibili.com/video/${bvid}`);
-  await expect(planPage.getByTestId("fake-bilibili")).toBeVisible();
-
-  await planPage.goto("https://www.bilibili.com/");
-  await expect(planPage).toHaveURL(/chrome-extension:\/\/[^/]+\/plan\.html$/);
-  await expect(planPage.getByRole("heading", { name: "计划", exact: true })).toBeVisible();
+  await expect(planPage).toHaveURL(plannedUrl);
+  await expect(planPage.getByTestId("planned-page")).toBeVisible();
 });
 
-test("options persist a section change through extension storage", async ({
-  openExtensionPage
-}) => {
+test("configuration handles a new profile with no websites", async ({ openExtensionPage }) => {
   const page = await openExtensionPage("options.html");
-  const homeToggle = page.getByTestId("section-toggle-home");
-  await expect(homeToggle).toBeVisible();
-
-  const initial = await homeToggle.isChecked();
-  await homeToggle.click();
-
-  const save = page.getByTestId("settings-save");
-  await expect(save).toBeVisible();
-  await save.click();
-  await page.reload();
-
-  await expect(page.getByTestId("section-toggle-home")).toBeChecked({ checked: !initial });
+  await expect(page.getByRole("heading", { name: "还没有可配置的网站" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "打开设置" })).toHaveAttribute("href", "home.html");
 });
 
 test("dashboard exposes every supported range and chart fallback", async ({

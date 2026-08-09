@@ -1,21 +1,16 @@
 {
   "manifest_version": 3,
-  "name": "BiliPace - 哔哩节拍",
-  "short_name": "BiliPace",
-  "version": "0.4.0",
-  "description": "隐藏 Bilibili 干扰内容，按计划专注观看，并在本地了解使用时间。",
-  "permissions": ["storage", "idle"],
-  "host_permissions": [
-    "https://www.bilibili.com/*",
-    "https://t.bilibili.com/*",
-    "https://live.bilibili.com/*",
-    "https://search.bilibili.com/*"
-  ],
+  "name": "Hourleaf",
+  "short_name": "Hourleaf",
+  "version": "0.5.0",
+  "description": "按自己的规则管理网站使用时间，减少分心，数据仅保存在本机。",
+  "permissions": ["storage", "idle", "scripting"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
   "background": {
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "BiliPace",
+    "default_title": "Hourleaf",
     "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon-16.png",
@@ -32,17 +27,10 @@
     "48": "icons/icon-48.png",
     "128": "icons/icon-128.png"
   },
-  "content_scripts": [
-    {
-      "matches": ["https://*.bilibili.com/*"],
-      "js": ["content.js"],
-      "run_at": "document_start"
-    }
-  ],
   "web_accessible_resources": [
     {
       "resources": ["plan.html"],
-      "matches": ["https://*.bilibili.com/*"]
+      "matches": ["http://*/*", "https://*/*"]
     }
   ],
   "content_security_policy": {

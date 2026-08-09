@@ -1,5 +1,5 @@
 name: Feature request
-description: Propose an improvement within BiliPace's local-first focus purpose.
+description: Propose an improvement within Hourleaf's local-first focus purpose.
 title: "[Feature]: "
 labels: [enhancement]
 body:
@@ -21,4 +21,4 @@ body:
     attributes:
       label: Data and permissions
       options:
-        - label: This proposal does not require a new site, account, telemetry or remote service.
+        - label: This proposal states any new site, permission, account, telemetry or remote-service impact.

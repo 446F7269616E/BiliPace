@@ -12,6 +12,7 @@ export type IconName =
   | "focus"
   | "home"
   | "info"
+  | "leaf"
   | "lock"
   | "pause"
   | "play"
@@ -109,6 +110,12 @@ export function icon(name: IconName, label?: string): SVGSVGElement {
     info: [
       svgPart("circle", { cx: "12", cy: "12", r: "9" }),
       svgPart("path", { d: "M12 11v5M12 8h.01" })
+    ],
+    leaf: [
+      svgPart("path", {
+        d: "M20.5 3.5C12 3.8 5.8 7.2 4.2 13.2c-1 3.8 1.5 6.9 5.3 6.3 6-.9 9.7-7.2 11-16Z"
+      }),
+      svgPart("path", { d: "M5 20c2.7-4.7 6.6-8.4 11.8-11" })
     ],
     lock: [
       svgPart("rect", { x: "4", y: "10", width: "16", height: "11", rx: "2" }),
@@ -215,6 +222,6 @@ export function assertAppRoot(): HTMLElement {
 }
 
 export function describeError(error: unknown): string {
-  console.debug("BiliPace interface action did not complete", error);
+  console.debug("Hourleaf interface action did not complete", error);
   return "操作失败，请重试。";
 }

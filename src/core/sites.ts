@@ -1,0 +1,322 @@
+import {
+  permissionsContains,
+  permissionsRemove,
+  scriptingGetRegisteredContentScripts,
+  scriptingRegisterContentScript,
+  scriptingUnregisterContentScripts
+} from "../shared/browser";
+import { isStableId } from "../shared/config";
+import { SettingsRepository } from "../shared/storage";
+import type {
+  FocusSettings,
+  ManagedSite,
+  SiteId,
+  SiteModuleManifest,
+  SiteTargetSettings,
+  TargetId
+} from "../shared/types";
+
+const REGISTRATION_PREFIX = "hourleaf-site-";
+
+export interface ResolvedTarget {
+  site: ManagedSite;
+  target: SiteTargetSettings;
+}
+
+export interface AddSiteResult {
+  granted: boolean;
+  origin: string;
+  site?: ManagedSite;
+  target?: SiteTargetSettings;
+}
+
+export class ManagedSiteService {
+  constructor(private readonly settings = new SettingsRepository()) {}
+
+  async list(): Promise<Pick<FocusSettings, "sites" | "targets">> {
+    const { sites, targets } = await this.settings.get();
+    return { sites, targets };
+  }
+
+  /** Persists only an origin already granted by a direct UI user gesture. */
+  async addAuthorized(url: string, label?: string, now = Date.now()): Promise<AddSiteResult> {
+    const parsed = parseHttpUrl(url);
+    if (!parsed) throw new Error("Only HTTP and HTTPS websites can be added");
+    const matchPattern = originMatchPattern(parsed.origin);
+    const granted = await permissionsContains([matchPattern]).catch(() => false);
+    if (!granted) return { granted: false, origin: parsed.origin };
+
+    const current = await this.settings.get();
+    const existing = Object.values(current.sites).find((site) => site.origin === parsed.origin);
+    if (existing) {
+      const target = current.targets[existing.targetIds[0] ?? ""];
+      await this.ensureRegistration(existing);
+      return {
+        granted: true,
+        origin: parsed.origin,
+        site: existing,
+        ...(target ? { target } : {})
+      };
+    }
+
+    const siteId = createOpaqueId("site");
+    const targetId = createOpaqueId("target");
+    const cleanLabel = normalizeLabel(label, parsed.hostname);
+    const site: ManagedSite = {
+      id: siteId,
+      origin: parsed.origin,
+      hostname: parsed.hostname,
+      label: cleanLabel,
+      enabled: true,
+      targetIds: [targetId],
+      createdAt: now,
+      updatedAt: now
+    };
+    const target: SiteTargetSettings = {
+      id: targetId,
+      siteId,
+      label: cleanLabel,
+      enabled: true,
+      dailyLimitMinutes: null,
+      schedules: [],
+      temporaryAccess: { enabled: true, durationMinutes: 5, maxUsesPerDay: 3 }
+    };
+    await this.settings.set({
+      ...current,
+      sites: { ...current.sites, [siteId]: site },
+      targets: { ...current.targets, [targetId]: target }
+    });
+    await this.ensureRegistration(site);
+    return { granted: true, origin: parsed.origin, site, target };
+  }
+
+  async updateSite(
+    siteId: SiteId,
+    patch: { label?: string; enabled?: boolean },
+    now = Date.now()
+  ): Promise<ManagedSite> {
+    const current = await this.settings.get();
+    const site = current.sites[siteId];
+    if (!site) throw new Error("Website is not configured");
+    const updated: ManagedSite = {
+      ...site,
+      ...(patch.label !== undefined ? { label: normalizeLabel(patch.label, site.hostname) } : {}),
+      ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
+      updatedAt: now
+    };
+    await this.settings.set({ ...current, sites: { ...current.sites, [siteId]: updated } });
+    if (updated.enabled) await this.ensureRegistration(updated);
+    else await scriptingUnregisterContentScripts([registrationId(site.id)]);
+    return updated;
+  }
+
+  async applyModuleManifest(manifest: SiteModuleManifest, enabled: boolean): Promise<void> {
+    const current = await this.settings.get();
+    const sites = { ...current.sites };
+    const targets = { ...current.targets };
+    for (const site of Object.values(sites)) {
+      if (!manifest.hosts.some((pattern) => modulePatternMatches(pattern, site.origin))) continue;
+      for (const section of manifest.sections) {
+        if (
+          section.hosts &&
+          !section.hosts.some((pattern) => modulePatternMatches(pattern, site.origin))
+        ) {
+          continue;
+        }
+        const moduleTargetId = section.targetId ?? `${manifest.id}:${section.id}`;
+        const existing = site.targetIds
+          .map((id) => targets[id])
+          .find(
+            (target) => target?.moduleId === manifest.id && target.moduleSectionId === section.id
+          );
+        if (existing) {
+          existing.moduleEnabled = enabled;
+          existing.moduleTargetId = moduleTargetId;
+          continue;
+        }
+        const targetId = moduleSiteTargetId(manifest.id, section.id, site.id);
+        targets[targetId] = {
+          id: targetId,
+          siteId: site.id,
+          label: section.label,
+          enabled,
+          dailyLimitMinutes: null,
+          schedules: [],
+          temporaryAccess: { enabled: true, durationMinutes: 5, maxUsesPerDay: 3 },
+          moduleId: manifest.id,
+          moduleSectionId: section.id,
+          moduleTargetId,
+          moduleEnabled: enabled
+        };
+        site.targetIds.push(targetId);
+      }
+    }
+    await this.settings.set({ ...current, sites, targets });
+  }
+
+  async updateTarget(
+    targetId: TargetId,
+    patch: Partial<
+      Pick<
+        SiteTargetSettings,
+        "label" | "enabled" | "dailyLimitMinutes" | "schedules" | "temporaryAccess"
+      >
+    >
+  ): Promise<SiteTargetSettings> {
+    const current = await this.settings.get();
+    const target = current.targets[targetId];
+    if (!target) throw new Error("Website target is not configured");
+    const normalized = await this.settings.set({
+      ...current,
+      targets: {
+        ...current.targets,
+        [targetId]: {
+          ...target,
+          ...patch,
+          temporaryAccess: { ...target.temporaryAccess, ...(patch.temporaryAccess ?? {}) }
+        }
+      }
+    });
+    const updated = normalized.targets[targetId];
+    if (!updated) throw new Error("Website target update was rejected");
+    return updated;
+  }
+
+  async remove(siteId: SiteId): Promise<{ removed: true; permissionRemoved: boolean }> {
+    const current = await this.settings.get();
+    const site = current.sites[siteId];
+    if (!site) throw new Error("Website is not configured");
+    const sites = { ...current.sites };
+    const targets = { ...current.targets };
+    delete sites[siteId];
+    for (const targetId of site.targetIds) delete targets[targetId];
+    await this.settings.set({ ...current, sites, targets });
+    await scriptingUnregisterContentScripts([registrationId(siteId)]);
+    const originStillUsed = Object.values(sites).some(
+      (candidate) => candidate.origin === site.origin
+    );
+    const permissionRemoved = originStillUsed
+      ? false
+      : await permissionsRemove([originMatchPattern(site.origin)]);
+    return { removed: true, permissionRemoved };
+  }
+
+  async resolve(
+    url: string,
+    requestedTargetId?: TargetId,
+    requirePermission = true
+  ): Promise<ResolvedTarget | null> {
+    const parsed = parseHttpUrl(url);
+    if (!parsed) return null;
+    const current = await this.settings.get();
+    const site = Object.values(current.sites).find(
+      (candidate) => candidate.origin === parsed.origin
+    );
+    if (!site || !site.enabled) return null;
+    const directTargetId = requestedTargetId ?? site.targetIds[0];
+    if (!directTargetId || !isStableId(directTargetId)) return null;
+    const target = site.targetIds
+      .map((targetId) => current.targets[targetId])
+      .find(
+        (candidate) =>
+          candidate?.id === directTargetId || candidate?.moduleTargetId === directTargetId
+      );
+    if (!target || target.siteId !== site.id || target.moduleEnabled === false) return null;
+    if (
+      requirePermission &&
+      !(await permissionsContains([originMatchPattern(site.origin)]).catch(() => false))
+    ) {
+      return null;
+    }
+    return { site, target };
+  }
+
+  /** Reconciles persistent registrations without requesting new permissions. */
+  async rebuildRegistrations(): Promise<void> {
+    const existing = await scriptingGetRegisteredContentScripts().catch(() => []);
+    const ownedIds = existing
+      .map((script) => script.id)
+      .filter((id) => id.startsWith(REGISTRATION_PREFIX));
+    if (ownedIds.length > 0) await scriptingUnregisterContentScripts(ownedIds);
+
+    const { sites } = await this.settings.get();
+    for (const site of Object.values(sites)) {
+      if (!site.enabled) continue;
+      const granted = await permissionsContains([originMatchPattern(site.origin)]).catch(
+        () => false
+      );
+      if (granted) await this.ensureRegistration(site);
+    }
+  }
+
+  private async ensureRegistration(site: ManagedSite): Promise<void> {
+    const id = registrationId(site.id);
+    await scriptingUnregisterContentScripts([id]).catch(() => undefined);
+    await scriptingRegisterContentScript(id, [originMatchPattern(site.origin)]);
+  }
+}
+
+export function parseHttpUrl(value: unknown): URL | null {
+  if (typeof value !== "string" || value.length > 4_096) return null;
+  try {
+    const url = new URL(value);
+    if ((url.protocol !== "http:" && url.protocol !== "https:") || url.username || url.password) {
+      return null;
+    }
+    return url;
+  } catch {
+    return null;
+  }
+}
+
+export function originMatchPattern(origin: string): string {
+  return `${origin}/*`;
+}
+
+export function sameOrigin(left: string, right: string): boolean {
+  const leftUrl = parseHttpUrl(left);
+  const rightUrl = parseHttpUrl(right);
+  return Boolean(leftUrl && rightUrl && leftUrl.origin === rightUrl.origin);
+}
+
+function registrationId(siteId: SiteId): string {
+  return `${REGISTRATION_PREFIX}${siteId.replace(/[^A-Za-z0-9_-]/g, "-")}`.slice(0, 128);
+}
+
+function createOpaqueId(prefix: "site" | "target"): string {
+  const value =
+    globalThis.crypto?.randomUUID?.() ??
+    `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  return `${prefix}:${value}`;
+}
+
+function normalizeLabel(value: unknown, fallback: string): string {
+  return typeof value === "string" && value.trim()
+    ? value.trim().slice(0, 80)
+    : fallback.slice(0, 80);
+}
+
+function modulePatternMatches(pattern: string, origin: string): boolean {
+  const match = /^(https?):\/\/(\*\.)?([A-Za-z0-9.-]+)(?::(\d+))?\/\*$/.exec(pattern);
+  const url = parseHttpUrl(origin);
+  if (!match || !url || `${match[1]}:` !== url.protocol) return false;
+  if (match[4] && match[4] !== url.port) return false;
+  const hostname = match[3]?.toLowerCase();
+  if (!hostname) return false;
+  return match[2]
+    ? url.hostname === hostname || url.hostname.endsWith(`.${hostname}`)
+    : url.hostname === hostname;
+}
+
+function moduleSiteTargetId(moduleId: string, sectionId: string, siteId: string): TargetId {
+  return `module-target:${hashText(`${moduleId}\u0000${sectionId}\u0000${siteId}`)}`;
+}
+
+function hashText(value: string): string {
+  let hash = 2_166_136_261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16_777_619);
+  }
+  return (hash >>> 0).toString(36);
+}

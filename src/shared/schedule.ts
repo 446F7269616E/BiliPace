@@ -1,6 +1,7 @@
 import type {
   FocusSettings,
   SectionId,
+  SiteTargetSettings,
   TimeAccessEffect,
   TimeAccessRule,
   TimeOfDay,
@@ -113,6 +114,39 @@ export function shouldBlockSection(
     return { blocked: true, explicit: true, reason: "blocked" };
   }
 
+  return { blocked: false, explicit: false, reason: "outside-schedule" };
+}
+
+/** Generic target rule evaluation used by the lightweight core. */
+export function shouldBlockTarget(
+  focusEnabled: boolean,
+  target: SiteTargetSettings,
+  now = new Date()
+): TimeRuleDecision {
+  if (!focusEnabled) {
+    return { blocked: false, explicit: false, reason: "focus-disabled" };
+  }
+  if (!target.enabled) {
+    return { blocked: false, explicit: false, reason: "rule-disabled" };
+  }
+
+  const enabledRules = target.schedules.filter((schedule) => schedule.enabled);
+  if (enabledRules.length === 0) {
+    return target.schedules.length === 0
+      ? { blocked: true, explicit: false, reason: "blocked" }
+      : { blocked: false, explicit: false, reason: "outside-schedule" };
+  }
+
+  const activeRules = enabledRules.filter((schedule) => isScheduleActive(schedule, now));
+  if (activeRules.some((schedule) => schedule.effect === "allow")) {
+    return { blocked: false, explicit: true, reason: "outside-schedule" };
+  }
+  if (activeRules.some((schedule) => schedule.effect === "block")) {
+    return { blocked: true, explicit: true, reason: "blocked" };
+  }
+  if (enabledRules.some((schedule) => schedule.effect === "allow")) {
+    return { blocked: true, explicit: true, reason: "blocked" };
+  }
   return { blocked: false, explicit: false, reason: "outside-schedule" };
 }
 

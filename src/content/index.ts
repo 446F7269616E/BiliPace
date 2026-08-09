@@ -1,16 +1,17 @@
 import { runtimeGetURL, storageAddChangeListener } from "../shared/browser";
-import { normalizeSettings } from "../shared/config";
 import { sendRequest, type SessionEvent } from "../shared/messages";
-import { extractBvidFromVideoUrl } from "../shared/plan";
-import { SECTION_LABELS, type PageDecision } from "../shared/types";
-import { STORAGE_KEYS } from "../shared/storage";
+import type { PageDecision } from "../shared/types";
+import { STORAGE_KEYS } from "../shared/storage-keys";
+import { resolveSiteModule, subscribeSiteModuleRegistry } from "../modules/registry";
 import { ContentFilterController } from "./content-filters";
 
-const ROOT_ID = "bilifocus-block-root";
+const ROOT_ID = "hourleaf-block-root";
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const ROUTE_POLL_INTERVAL_MS = 1_000;
 const SESSION_ID = createSessionId();
 const contentFilters = new ContentFilterController();
+
+subscribeSiteModuleRegistry(() => void evaluatePage());
 
 let renderedForUrl = "";
 let lastSeenUrl = window.location.href;
@@ -33,8 +34,6 @@ storageAddChangeListener((changes, areaName) => {
   if (areaName !== "local") return;
   const changed = changes[STORAGE_KEYS.settings];
   if (!changed || changed.newValue === undefined) return;
-  const settings = normalizeSettings(changed.newValue);
-  contentFilters.apply(settings.contentFilters, window.location.href);
   void evaluatePage();
 });
 window.addEventListener("pagehide", () => {
@@ -47,7 +46,7 @@ setInterval(() => {
 
 // Isolated content-script worlds cannot reliably monkey-patch the page's History
 // object in every browser. A cheap URL-only poll covers pushState/replaceState and
-// Bilibili custom navigation without injecting code into the page world.
+// Site-specific SPA navigation is covered without injecting code into the page world.
 setInterval(routeMayHaveChanged, ROUTE_POLL_INTERVAL_MS);
 
 function routeMayHaveChanged(): void {
@@ -96,13 +95,14 @@ async function refreshContentState(): Promise<void> {
 }
 
 async function enforcePlanNavigation(): Promise<"allowed" | "redirected" | "unavailable"> {
+  const module = resolveSiteModule(window.location.href);
   const generation = ++planCheckGeneration;
   try {
-    const bvid = extractBvidFromVideoUrl(window.location.href) ?? undefined;
-    const decision = await sendRequest({
-      type: "GET_PLAN_NAVIGATION_DECISION",
-      ...(bvid ? { bvid } : {})
-    });
+    const decision = await sendRequest(
+      module?.plan
+        ? module.plan.createNavigationRequest(window.location.href)
+        : { type: "GET_PLAN_NAVIGATION_DECISION", url: window.location.href }
+    );
     if (generation !== planCheckGeneration) return "unavailable";
     if (decision.allowed) return "allowed";
     if (contentStarted) await sendSessionUpdate("stop");
@@ -130,11 +130,13 @@ function scheduleInitializationRetry(): void {
 
 async function sendSessionUpdate(event: SessionEvent): Promise<void> {
   try {
+    const match = resolveSiteModule(window.location.href)?.match(window.location.href);
     await sendRequest({
       type: "SESSION_UPDATE",
       event,
       sessionId: SESSION_ID,
       url: window.location.href,
+      ...(match ? { targetId: match.targetId } : {}),
       visibility: document.visibilityState === "visible" ? "visible" : "hidden"
     });
   } catch {
@@ -146,14 +148,20 @@ async function sendSessionUpdate(event: SessionEvent): Promise<void> {
 async function evaluatePage(): Promise<void> {
   const topLevelUrl = window.location.href;
   const url = topLevelUrl;
+  const module = resolveSiteModule(url);
+  const match = module?.match(url);
   const generation = ++evaluationGeneration;
   try {
     const [decision, settings] = await Promise.all([
-      sendRequest({ type: "GET_PAGE_DECISION", url }),
+      sendRequest({
+        type: "GET_PAGE_DECISION",
+        url,
+        ...(match ? { targetId: match.targetId } : {})
+      }),
       sendRequest({ type: "GET_SETTINGS" })
     ]);
     if (generation !== evaluationGeneration || topLevelUrl !== window.location.href) return;
-    contentFilters.apply(settings.contentFilters, url);
+    contentFilters.apply(module?.contentSettings(settings) ?? settings.contentFilters, url);
     if (!decision.blocked) {
       removeBlockPage();
       renderedForUrl = url;
@@ -167,8 +175,8 @@ async function evaluatePage(): Promise<void> {
       renderedForUrl = url;
     }
   } catch (error) {
-    // A missing/restarting background context must never break Bilibili itself.
-    console.debug("BiliPace page check unavailable", error);
+    // A missing or restarting background context must never break the current site.
+    console.debug("Hourleaf page check unavailable", error);
   }
 }
 
@@ -193,32 +201,40 @@ function renderBlockPage(decision: PageDecision, url: string): void {
   style.textContent = BLOCK_PAGE_CSS;
 
   const backdrop = element("main", "backdrop");
-  backdrop.setAttribute("aria-labelledby", "bilifocus-title");
+  backdrop.setAttribute("aria-labelledby", "hourleaf-title");
   const card = element("section", "card");
   card.setAttribute("role", "dialog");
   card.setAttribute("aria-modal", "true");
-  card.setAttribute("aria-describedby", "bilifocus-message");
+  card.setAttribute("aria-describedby", "hourleaf-message");
 
-  const mark = element("div", "mark", "B");
+  const mark = element("div", "mark", "H");
   mark.setAttribute("aria-hidden", "true");
-  const eyebrow = element("p", "eyebrow", "BiliPace");
+  const eyebrow = element("p", "eyebrow", "Hourleaf");
   const heading = element("h1", "", "当前页面已受限");
-  heading.id = "bilifocus-title";
+  heading.id = "hourleaf-title";
 
-  const sectionLabel = decision.section ? SECTION_LABELS[decision.section] : "此页面";
+  const moduleMatch = resolveSiteModule(url)?.match(url);
+  const sectionLabel =
+    moduleMatch && (!decision.targetId || decision.targetId === moduleMatch.targetId)
+      ? moduleMatch.sectionLabel
+      : "此页面";
   const reasonText =
     decision.reason === "daily-limit"
       ? `${sectionLabel}的今日使用额度已用完。`
       : `${sectionLabel}在当前时段不可用。`;
   const message = element("p", "message", reasonText);
-  message.id = "bilifocus-message";
+  message.id = "hourleaf-message";
 
   const actions = element("div", "actions");
   const backButton = element("button", "", "返回上一页");
   backButton.type = "button";
   backButton.addEventListener("click", () => {
     if (history.length > 1) history.back();
-    else window.location.assign("https://www.bilibili.com/video/");
+    else {
+      const fallbackUrl = resolveSiteModule(url)?.match(url)?.fallbackUrl;
+      if (fallbackUrl) window.location.assign(fallbackUrl);
+      else window.close();
+    }
   });
   actions.append(backButton);
 
@@ -252,7 +268,12 @@ function renderBlockPage(decision: PageDecision, url: string): void {
     allowButton.disabled = true;
     status.textContent = "正在开启临时访问…";
     try {
-      const nextDecision = await sendRequest({ type: "GRANT_TEMPORARY_ACCESS", url });
+      const match = resolveSiteModule(url)?.match(url);
+      const nextDecision = await sendRequest({
+        type: "GRANT_TEMPORARY_ACCESS",
+        url,
+        ...(match ? { targetId: match.targetId } : {})
+      });
       if (!nextDecision.blocked) {
         removeBlockPage();
         return;
@@ -293,9 +314,8 @@ function restoreManagedBody(): void {
 function startMediaGuard(host: HTMLElement): void {
   mediaObserver?.disconnect();
   mediaObserver = new MutationObserver((mutations) => {
-    // Ave rewrites the homepage body during startup. Keep the extension-owned
-    // blocker outside that body and restore it immediately if another mount
-    // transition removes or replaces the surrounding document structure.
+    // A site module may replace the body during startup. Keep the extension-owned
+    // blocker outside that body and restore it across mount transitions.
     if (!host.isConnected && document.documentElement) document.documentElement.append(host);
     setPageInert(true);
     for (const mutation of mutations) {

@@ -20,6 +20,56 @@ export const SECTION_LABELS: Readonly<Record<SectionId, string>> = {
   search: "搜索"
 };
 
+/** Stable opaque identifiers. They must never contain a visited URL path. */
+export type SiteId = string;
+export type TargetId = string;
+export type SiteModuleId = string;
+
+export const SITE_MODULE_CAPABILITIES = [
+  "classify",
+  "content-filter",
+  "plan",
+  "usage-tracking"
+] as const;
+export type SiteModuleCapability = (typeof SITE_MODULE_CAPABILITIES)[number];
+
+export interface SiteModuleSection {
+  id: string;
+  label: string;
+  targetId?: TargetId;
+  /** Optional subset of manifest hosts where this section can occur. */
+  hosts?: string[];
+}
+
+/**
+ * Declarative metadata only. Installing this record never downloads or executes
+ * code; executable modules must be bundled with or separately reviewed by the
+ * browser store package.
+ */
+export interface SiteModuleManifest {
+  id: SiteModuleId;
+  version: string;
+  name: string;
+  hosts: string[];
+  sections: SiteModuleSection[];
+  capabilities: SiteModuleCapability[];
+}
+
+export type SiteModuleSource = "bundled" | "store";
+
+export interface SiteModuleInstallation {
+  manifest: SiteModuleManifest;
+  source: SiteModuleSource;
+  enabled: boolean;
+  installedAt: number;
+  updatedAt: number;
+}
+
+export interface SiteModuleStore {
+  schemaVersion: 1;
+  installations: Record<SiteModuleId, SiteModuleInstallation>;
+}
+
 /** JavaScript weekday: Sunday = 0, Monday = 1, ... Saturday = 6. */
 export type Weekday = 0 | 1 | 2 | 3 | 4 | 5 | 6;
 
@@ -48,6 +98,33 @@ export interface SectionRule {
   schedules: TimeAccessRule[];
 }
 
+export interface ManagedSite {
+  id: SiteId;
+  /** URL origin only, for example https://example.com. Paths are discarded. */
+  origin: string;
+  hostname: string;
+  label: string;
+  enabled: boolean;
+  targetIds: TargetId[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface SiteTargetSettings {
+  id: TargetId;
+  siteId: SiteId;
+  label: string;
+  enabled: boolean;
+  dailyLimitMinutes: number | null;
+  schedules: TimeAccessRule[];
+  temporaryAccess: TemporaryAccessSettings;
+  moduleId?: SiteModuleId;
+  moduleSectionId?: string;
+  /** Runtime descriptor target mapped to this site's private settings target. */
+  moduleTargetId?: TargetId;
+  moduleEnabled?: boolean;
+}
+
 export interface TemporaryAccessSettings {
   enabled: boolean;
   durationMinutes: number;
@@ -56,7 +133,7 @@ export interface TemporaryAccessSettings {
 
 export interface PlanModeSettings {
   enabled: boolean;
-  /** Minutes granted after explicitly starting the current planned video. */
+  /** Minutes granted after explicitly starting the current planned page. */
   watchDurationMinutes: number;
 }
 
@@ -87,12 +164,31 @@ export interface ContentFilterSettings {
   slashToSearch: boolean;
 }
 
-export interface FocusSettings {
+export interface LegacyBilibiliCapsule {
   schemaVersion: 2;
-  enabled: boolean;
   sectionRules: Record<SectionId, SectionRule>;
-  temporaryAccess: TemporaryAccessSettings;
   planMode: PlanModeSettings;
+  contentFilters: ContentFilterSettings;
+}
+
+export interface LegacySettingsCapsules {
+  /** Preserved for the optional Bilibili module; ignored by the generic core. */
+  bilibili?: LegacyBilibiliCapsule;
+}
+
+export interface FocusSettings {
+  schemaVersion: 3;
+  enabled: boolean;
+  sites: Record<SiteId, ManagedSite>;
+  targets: Record<TargetId, SiteTargetSettings>;
+  legacyCapsules: LegacySettingsCapsules;
+  /** @deprecated Compatibility mirror for the optional Bilibili module/UI. */
+  sectionRules: Record<SectionId, SectionRule>;
+  /** @deprecated New targets carry their own temporary access policy. */
+  temporaryAccess: TemporaryAccessSettings;
+  /** @deprecated Owned by the optional Bilibili module. */
+  planMode: PlanModeSettings;
+  /** @deprecated Owned by the optional Bilibili module. */
   contentFilters: ContentFilterSettings;
 }
 
@@ -104,11 +200,13 @@ export type DeepPartial<T> = T extends readonly (infer U)[]
 
 export interface DailyUsage {
   date: string;
+  byTarget: Record<TargetId, number>;
+  /** @deprecated Derived legacy projection; not persisted in schema v2. */
   bySection: Record<SectionId, number>;
 }
 
 export interface UsageStore {
-  schemaVersion: 1;
+  schemaVersion: 2;
   days: Record<string, DailyUsage>;
 }
 
@@ -119,13 +217,19 @@ export interface UsageSummary {
   startDate: string;
   endDate: string;
   totalSeconds: number;
+  byTarget: Record<TargetId, number>;
+  /** @deprecated Derived legacy projection for old UI builds. */
   bySection: Record<SectionId, number>;
   byDay: DailyUsage[];
 }
 
 export interface TemporaryAccessStore {
-  schemaVersion: 1;
+  schemaVersion: 2;
+  expiresAtByTarget: Partial<Record<TargetId, number>>;
+  usesByDateAndTarget: Record<string, Partial<Record<TargetId, number>>>;
+  /** @deprecated Read-only migration mirrors. */
   expiresAtBySection: Partial<Record<SectionId, number>>;
+  /** @deprecated Global legacy counters, retained without adding new writes. */
   usesByDate: Record<string, number>;
 }
 
@@ -136,10 +240,11 @@ export type PlanItemStatus = "pending" | "completed";
 export interface PlanItem {
   /** Extension-generated stable identifier. */
   id: string;
-  /** Canonical, case-sensitive Bilibili video identity. */
-  bvid: string;
-  /** Canonical URL derived from bvid; arbitrary URLs are never persisted. */
+  /** @deprecated Opaque legacy identity retained for migrated Bilibili queues. */
+  bvid?: string;
+  /** User-submitted canonical HTTP(S) URL. */
   url: string;
+  origin: string;
   title: string;
   status: PlanItemStatus;
   order: number;
@@ -153,9 +258,9 @@ interface PlanItemInputMetadata {
   source?: PlanItemSource;
 }
 
-/** At least one validated video identity is required when creating/importing. */
+/** A user-submitted HTTP(S) URL is required for new generic plan items. */
 export type PlanItemInput = PlanItemInputMetadata &
-  ({ bvid: string; url?: string } | { url: string; bvid?: string });
+  ({ url: string; bvid?: string } | { bvid: string; url?: string });
 
 export interface PlanItemPatch extends PlanItemInputMetadata {
   url?: string;
@@ -169,7 +274,10 @@ export interface PlanQueueStore {
 
 export interface PlanWatchGrant {
   itemId: string;
-  bvid: string;
+  url: string;
+  origin: string;
+  /** @deprecated Opaque legacy identity. */
+  bvid?: string;
   grantedAt: number;
   expiresAt: number;
 }
@@ -189,11 +297,17 @@ export interface PlanNavigationDecision {
   planModeEnabled: boolean;
   allowed: boolean;
   reason: "disabled" | "authorized" | "not-authorized" | "expired" | "not-video";
+  url?: string;
+  origin?: string;
+  /** @deprecated Opaque legacy identity. */
   bvid?: string;
   expiresAt?: number;
 }
 
 export interface PageDecision {
+  siteId?: SiteId;
+  targetId?: TargetId;
+  /** @deprecated Present only for legacy Bilibili targets. */
   section: SectionId | null;
   blocked: boolean;
   reason:
@@ -210,6 +324,9 @@ export interface PageDecision {
 }
 
 export interface TrackingStatus {
+  siteId?: SiteId;
+  targetId?: TargetId;
+  /** @deprecated Present only for legacy Bilibili targets. */
   section: SectionId | null;
   isTracking: boolean;
   idleState: "active" | "idle" | "locked" | "unsupported";

@@ -1,5 +1,4 @@
 import { sendRequest } from "../shared/messages";
-import { parseManualBilibiliImport } from "../integrations";
 import { MAX_PLAN_IMPORT_ITEMS, MAX_PLAN_TITLE_LENGTH } from "../shared/plan";
 import type { PlanItem, PlanItemInput, PlanItemSource, PlanState } from "../shared/types";
 import { assertAppRoot, describeError, element, icon, setButtonBusy, toast } from "../styles/dom";
@@ -12,7 +11,7 @@ const SOURCE_LABELS: Readonly<Record<PlanItemSource, string>> = {
 };
 
 const WATCH_DURATIONS = [15, 30, 45, 60, 90, 120] as const;
-const PLAN_VIEW_STORAGE_KEY = "bilipace.plan.view";
+const PLAN_VIEW_STORAGE_KEY = "hourleaf.plan.view";
 type PlanView = "list" | "mindmap";
 
 const app = assertAppRoot();
@@ -118,7 +117,12 @@ function createShell(content: HTMLElement): HTMLElement {
       createPageNavigation({ currentPage: "plan" }),
       element("header", {
         className: "plan-heading",
-        children: [element("h1", { className: "page-title", text: "计划" }), createViewControl()]
+        children: [
+          element("div", {
+            children: [element("h1", { className: "page-title", text: "计划" })]
+          }),
+          createViewControl()
+        ]
       }),
       content
     ]
@@ -361,7 +365,7 @@ function createItemSection(
       items.length > 0
         ? element("ol", {
             className: "plan-list",
-            attrs: { "aria-label": completed ? "已完成视频" : "待观看视频" },
+            attrs: { "aria-label": completed ? "已完成内容" : "待办内容" },
             children: items.map((item, index) => createPlanItem(item, index, items.length, variant))
           })
         : createEmpty(completed)
@@ -454,7 +458,7 @@ function createPlanItem(
                   className: "plan-source-pill",
                   text: SOURCE_LABELS[item.source]
                 }),
-                element("span", { text: item.bvid }),
+                ...(item.bvid ? [element("span", { text: item.bvid })] : []),
                 element("span", {
                   text:
                     complete && item.completedAt
@@ -508,7 +512,7 @@ function createItemActions(
     const start = element("button", {
       className: "btn btn--primary",
       attrs: { type: "button", "data-testid": `plan-start-${item.id}` },
-      children: [icon("play"), "开始观看"]
+      children: [icon("play"), "开始"]
     });
     start.addEventListener("click", () => void startWatching(item, start));
     actions.push(start);
@@ -607,7 +611,7 @@ function createEditForm(item: PlanItem): HTMLElement {
       }),
       element("label", {
         className: "plan-field",
-        children: [element("span", { text: "视频链接" }), url]
+        children: [element("span", { text: "内容链接" }), url]
       }),
       element("div", { className: "plan-form__actions", children: [save, cancel] })
     ]
@@ -746,7 +750,7 @@ async function updateItem(
   const title = titleValue.trim();
   const url = urlValue.trim();
   if (!title || !url) {
-    toast("请填写标题和视频链接", "error");
+    toast("请填写标题和内容链接", "error");
     return;
   }
   setButtonBusy(button, true, "保存中…");
@@ -762,7 +766,7 @@ async function updateItem(
 }
 
 async function deleteItem(item: PlanItem, button: HTMLButtonElement): Promise<void> {
-  if (!window.confirm(`确定删除“${item.title}”吗？此操作不会影响 Bilibili 上的视频。`)) return;
+  if (!window.confirm(`确定删除“${item.title}”吗？此操作不会影响原网站上的内容。`)) return;
   button.disabled = true;
   try {
     state = await sendRequest({ type: "DELETE_PLAN_ITEM", id: item.id });
@@ -778,7 +782,7 @@ async function deleteItem(item: PlanItem, button: HTMLButtonElement): Promise<vo
 function createAside(): HTMLElement {
   return element("aside", {
     className: "plan-aside",
-    attrs: { "aria-label": "添加与导入视频" },
+    attrs: { "aria-label": "添加与导入计划内容" },
     children: [createAddCard(), createImportCard()]
   });
 }
@@ -792,7 +796,7 @@ function createAddCard(): HTMLElement {
       inputmode: "url",
       autocomplete: "off",
       maxlength: "500",
-      placeholder: "https://www.bilibili.com/video/BV…",
+      placeholder: "粘贴内容链接",
       required: true,
       "aria-describedby": "plan-url-error",
       "data-testid": "plan-add-url"
@@ -805,7 +809,7 @@ function createAddCard(): HTMLElement {
       type: "text",
       autocomplete: "off",
       maxlength: MAX_PLAN_TITLE_LENGTH,
-      placeholder: "可选；留空会使用 BV 号",
+      placeholder: "可选；留空使用内容 ID",
       "data-testid": "plan-add-title"
     }
   });
@@ -826,7 +830,7 @@ function createAddCard(): HTMLElement {
         className: "plan-card__header",
         children: [
           element("div", {
-            children: [element("h2", { text: "添加视频" })]
+            children: [element("h2", { text: "添加待办" })]
           }),
           element("span", { className: "plan-status-pill", text: "本地保存" })
         ]
@@ -834,7 +838,7 @@ function createAddCard(): HTMLElement {
       element("div", {
         className: "plan-field",
         children: [
-          element("label", { text: "视频链接", attrs: { for: "plan-video-url" } }),
+          element("label", { text: "内容链接", attrs: { for: "plan-video-url" } }),
           url,
           error
         ]
@@ -868,7 +872,7 @@ async function addItem(
   const url = urlInput.value.trim();
   const title = titleInput.value.trim();
   if (!url) {
-    showFieldError(urlInput, error, "请粘贴一个 Bilibili 视频链接");
+    showFieldError(urlInput, error, "当前站点模块不支持此链接");
     return;
   }
   setButtonBusy(submit, true, "正在添加…");
@@ -894,7 +898,7 @@ function createImportCard(): HTMLElement {
   const bulk = element("button", {
     className: "btn btn--primary btn--block",
     attrs: { type: "button", "data-testid": "plan-bulk-import" },
-    children: [icon("plus"), "批量粘贴视频链接"]
+    children: [icon("plus"), "批量粘贴内容链接"]
   });
   bulk.addEventListener("click", openBulkImportDialog);
 
@@ -922,8 +926,8 @@ function openBulkImportDialog(): void {
     attrs: {
       rows: "8",
       maxlength: "100000",
-      placeholder: "每行一个链接，或：\n视频标题 | https://www.bilibili.com/video/BV…",
-      "aria-label": "批量视频链接",
+      placeholder: "每行一个链接，或：\n标题 | 内容链接",
+      "aria-label": "批量内容链接",
       "aria-describedby": "plan-bulk-error"
     }
   });
@@ -961,7 +965,7 @@ function openBulkImportDialog(): void {
             children: [
               element("div", {
                 children: [
-                  element("h2", { text: "批量粘贴视频", attrs: { id: "plan-bulk-title" } })
+                  element("h2", { text: "批量粘贴内容", attrs: { id: "plan-bulk-title" } })
                 ]
               }),
               iconClose
@@ -973,7 +977,7 @@ function openBulkImportDialog(): void {
               element("div", {
                 className: "plan-field",
                 children: [
-                  element("label", { text: "视频清单", attrs: { for: "plan-bulk-input" } }),
+                  element("label", { text: "内容清单", attrs: { for: "plan-bulk-input" } }),
                   textarea,
                   error
                 ]
@@ -994,7 +998,7 @@ function openBulkImportDialog(): void {
 
   let parsedItems: PlanItemInput[] = [];
   parse.addEventListener("click", () => {
-    const result = parseManualBilibiliImport(textarea.value);
+    const result = parsePlanImport(textarea.value);
     parsedItems = result.items;
     renderImportPreview(
       preview,
@@ -1008,8 +1012,8 @@ function openBulkImportDialog(): void {
       parsedItems.length > 0
         ? ""
         : result.truncated
-          ? "输入过长，且没有找到有效的 Bilibili 视频链接"
-          : "没有找到有效的 Bilibili 视频链接";
+          ? "输入过长，且没有找到有效链接"
+          : "没有找到有效链接";
   });
   importButton.addEventListener("click", () => {
     const selectedIds = new Set(
@@ -1017,7 +1021,7 @@ function openBulkImportDialog(): void {
         (input) => input.value
       )
     );
-    const selected = parsedItems.filter((item) => item.bvid && selectedIds.has(item.bvid));
+    const selected = parsedItems.filter((item) => item.url && selectedIds.has(item.url));
     void importItems(selected, importButton, dialog);
   });
   const closeDialog = () => dialog.close();
@@ -1055,9 +1059,9 @@ function renderImportPreview(
     element("input", {
       attrs: {
         type: "checkbox",
-        value: item.bvid,
+        value: item.url,
         checked: true,
-        "aria-label": `选择${item.title ?? item.bvid ?? "视频"}`
+        "aria-label": `选择${item.title ?? item.url ?? "计划内容"}`
       }
     })
   );
@@ -1092,7 +1096,7 @@ function renderImportPreview(
                 children: [
                   element("span", {
                     className: "plan-selection-item__title",
-                    text: item.title || item.bvid || "Bilibili 视频"
+                    text: item.title || item.url || "计划内容"
                   }),
                   element("span", { className: "plan-selection-item__meta", text: item.url })
                 ]
@@ -1161,6 +1165,72 @@ async function importItems(
       dialog.close();
       renderPlan();
     }
+  }
+}
+
+function parsePlanImport(value: string): {
+  items: PlanItemInput[];
+  rejected: string[];
+  duplicateCount: number;
+  truncated: boolean;
+} {
+  const maxInputLength = 100_000;
+  const truncated = value.length > maxInputLength;
+  const lines = value.slice(0, maxInputLength).split(/\r?\n/u);
+  const items: PlanItemInput[] = [];
+  const rejected: string[] = [];
+  const seen = new Set<string>();
+  let duplicateCount = 0;
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const parsed = parsePlanImportLine(line);
+    if (!parsed) {
+      rejected.push(line);
+      continue;
+    }
+    if (seen.has(parsed.url)) {
+      duplicateCount += 1;
+      continue;
+    }
+    if (items.length >= MAX_PLAN_IMPORT_ITEMS) {
+      rejected.push(line);
+      continue;
+    }
+    seen.add(parsed.url);
+    items.push(parsed);
+  }
+  return { items, rejected, duplicateCount, truncated };
+}
+
+function parsePlanImportLine(
+  line: string
+): (PlanItemInput & { url: string; source: "manual" }) | null {
+  const markdown = /^\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)$/iu.exec(line);
+  let title = markdown?.[1]?.trim() ?? "";
+  let rawUrl = markdown?.[2] ?? "";
+
+  if (!rawUrl) {
+    const separator = line.lastIndexOf("|");
+    if (separator >= 0) {
+      title = line.slice(0, separator).trim();
+      rawUrl = line.slice(separator + 1).trim();
+    } else {
+      rawUrl = line;
+    }
+  }
+
+  try {
+    const url = new URL(rawUrl);
+    if ((url.protocol !== "http:" && url.protocol !== "https:") || url.username || url.password) {
+      return null;
+    }
+    url.hash = "";
+    const normalizedTitle = title.slice(0, MAX_PLAN_TITLE_LENGTH) || url.hostname;
+    return { url: url.href, title: normalizedTitle, source: "manual" };
+  } catch {
+    return null;
   }
 }
 
