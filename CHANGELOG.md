@@ -4,6 +4,25 @@ All notable changes to Hourleaf will be documented in this file. The format foll
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-11
+
+### Added
+
+- Added a bounded local-module format for exact domain policies, element hiding, self-contained CSS, safe DNR rules and browser-isolated user scripts.
+- Added local file import, explicit site authorization and module enable/remove controls, with an optional source catalog kept outside store packages.
+- Added store-candidate packaging assertions and SHA-256 checksums for Chromium, Firefox and Safari artifacts.
+
+### Changed
+
+- Reduced store builds to the generic focus core and moved website-specific examples to the manually downloaded GitHub catalog.
+- Made browser target capabilities build-time constants so Safari rejects imported user scripts at the privileged service boundary.
+- Updated the GitHub Actions artifact upload to publish only validated store-candidate ZIP files.
+
+### Privacy
+
+- Modules are never downloaded or updated by the extension; users must select local files and approve exact website access.
+- Imported scripts use only the browser User Scripts API on Chromium/Firefox; Safari store builds do not import or execute them.
+
 ## [0.5.1] - 2026-08-09
 
 ### Changed

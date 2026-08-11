@@ -2,9 +2,10 @@
   "manifest_version": 3,
   "name": "Hourleaf",
   "short_name": "Hourleaf",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "按自己的规则管理网站使用时间，减少分心，数据仅保存在本机。",
-  "permissions": ["storage", "idle", "scripting"],
+  "permissions": ["storage", "idle", "scripting", "declarativeNetRequestWithHostAccess"],
+  "optional_permissions": ["userScripts"],
   "optional_host_permissions": ["http://*/*", "https://*/*"],
   "background": {
     "scripts": ["background.js"]

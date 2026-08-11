@@ -10,6 +10,7 @@ const HEARTBEAT_INTERVAL_MS = 15_000;
 const ROUTE_POLL_INTERVAL_MS = 1_000;
 const SESSION_ID = createSessionId();
 const contentFilters = new ContentFilterController();
+const LOCAL_STYLE_ID = "hourleaf-local-module-style";
 
 subscribeSiteModuleRegistry(() => void evaluatePage());
 
@@ -32,7 +33,7 @@ document.addEventListener("visibilitychange", () => {
 });
 storageAddChangeListener((changes, areaName) => {
   if (areaName !== "local") return;
-  const changed = changes[STORAGE_KEYS.settings];
+  const changed = changes[STORAGE_KEYS.settings] ?? changes[STORAGE_KEYS.localModules];
   if (!changed || changed.newValue === undefined) return;
   void evaluatePage();
 });
@@ -152,16 +153,22 @@ async function evaluatePage(): Promise<void> {
   const match = module?.match(url);
   const generation = ++evaluationGeneration;
   try {
-    const [decision, settings] = await Promise.all([
+    const [decision, settings, localRules] = await Promise.all([
       sendRequest({
         type: "GET_PAGE_DECISION",
         url,
         ...(match ? { targetId: match.targetId } : {})
       }),
-      sendRequest({ type: "GET_SETTINGS" })
+      sendRequest({ type: "GET_SETTINGS" }),
+      sendRequest({ type: "GET_LOCAL_PAGE_RULES", url }).catch(() => ({
+        css: "",
+        hideSelectors: [],
+        moduleIds: []
+      }))
     ]);
     if (generation !== evaluationGeneration || topLevelUrl !== window.location.href) return;
     contentFilters.apply(module?.contentSettings(settings) ?? settings.contentFilters, url);
+    applyLocalPageRules(localRules.css, localRules.hideSelectors);
     if (!decision.blocked) {
       removeBlockPage();
       renderedForUrl = url;
@@ -178,6 +185,19 @@ async function evaluatePage(): Promise<void> {
     // A missing or restarting background context must never break the current site.
     console.debug("Hourleaf page check unavailable", error);
   }
+}
+
+function applyLocalPageRules(css: string, hideSelectors: string[]): void {
+  document.getElementById(LOCAL_STYLE_ID)?.remove();
+  const hideCss = hideSelectors
+    .map((selector) => `${selector} { display: none !important; }`)
+    .join("\n");
+  const combined = [hideCss, css].filter((part) => part.trim()).join("\n\n");
+  if (!combined) return;
+  const style = document.createElement("style");
+  style.id = LOCAL_STYLE_ID;
+  style.textContent = combined;
+  (document.head ?? document.documentElement).append(style);
 }
 
 function renderBlockPage(decision: PageDecision, url: string): void {
@@ -221,7 +241,9 @@ function renderBlockPage(decision: PageDecision, url: string): void {
   const reasonText =
     decision.reason === "daily-limit"
       ? `${sectionLabel}的今日使用额度已用完。`
-      : `${sectionLabel}在当前时段不可用。`;
+      : decision.reason === "domain-block"
+        ? `${sectionLabel}已被本地模块加入域名黑名单。`
+        : `${sectionLabel}在当前时段不可用。`;
   const message = element("p", "message", reasonText);
   message.id = "hourleaf-message";
 

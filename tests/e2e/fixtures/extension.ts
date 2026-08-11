@@ -18,7 +18,10 @@ interface ExtensionWorkerFixtures {
 
 export const test = base.extend<ExtensionFixtures, ExtensionWorkerFixtures>({
   extensionContext: [
-    async (_fixtures, use) => {
+    async ({ browserName }, use) => {
+      if (browserName !== "chromium") {
+        throw new Error("The installed extension fixture requires Chromium");
+      }
       if (!fs.existsSync(path.join(extensionPath, "manifest.json"))) {
         throw new Error(
           `Missing Chromium build at ${extensionPath}; run npm run build:chromium first`

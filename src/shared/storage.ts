@@ -114,6 +114,12 @@ export class SiteModuleRepository {
 
   async initialize(now = Date.now()): Promise<SiteModuleStore> {
     return this.update((store) => {
+      const preinstalledIds = new Set(this.preinstalled.map((manifest) => manifest.id));
+      for (const [id, installation] of Object.entries(store.installations)) {
+        if (installation.source === "bundled" && !preinstalledIds.has(id)) {
+          delete store.installations[id];
+        }
+      }
       for (const manifest of this.preinstalled) {
         const previous = store.installations[manifest.id];
         if (previous) {

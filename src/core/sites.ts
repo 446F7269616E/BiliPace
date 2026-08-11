@@ -84,6 +84,7 @@ export class ManagedSiteService {
       siteId,
       label: cleanLabel,
       enabled: true,
+      accessPolicy: "timed",
       dailyLimitMinutes: null,
       schedules: [],
       temporaryAccess: { enabled: true, durationMinutes: 5, maxUsesPerDay: 3 }
@@ -151,6 +152,7 @@ export class ManagedSiteService {
           siteId: site.id,
           label: section.label,
           enabled,
+          accessPolicy: "timed",
           dailyLimitMinutes: null,
           schedules: [],
           temporaryAccess: { enabled: true, durationMinutes: 5, maxUsesPerDay: 3 },
@@ -205,7 +207,7 @@ export class ManagedSiteService {
     patch: Partial<
       Pick<
         SiteTargetSettings,
-        "label" | "enabled" | "dailyLimitMinutes" | "schedules" | "temporaryAccess"
+        "label" | "enabled" | "accessPolicy" | "dailyLimitMinutes" | "schedules" | "temporaryAccess"
       >
     >
   ): Promise<SiteTargetSettings> {

@@ -34,6 +34,14 @@ test("packaged manifest stays inside the reviewed permission budget", () => {
       "webRequestBlocking"
     ])
   );
+  expect(manifest.permissions).toEqual(
+    expect.arrayContaining([
+      "storage",
+      "scripting",
+      "declarativeNetRequestWithHostAccess",
+      "userScripts"
+    ])
+  );
   expect(manifest.host_permissions ?? []).toEqual([]);
   expect([...(manifest.optional_host_permissions ?? [])].sort()).toEqual([
     "http://*/*",
@@ -45,6 +53,8 @@ test("packaged manifest stays inside the reviewed permission budget", () => {
   ]);
   expect(manifest.content_security_policy?.extension_pages).toContain("script-src 'self'");
   expect(manifest.content_security_policy?.extension_pages).not.toMatch(/https?:|unsafe-eval/);
+  expect(fs.existsSync(path.join(extensionPath, "modules"))).toBe(false);
+  expect(fs.existsSync(path.join(extensionPath, "optional-modules"))).toBe(false);
 });
 
 for (const [fileName, title] of [
@@ -67,7 +77,7 @@ for (const [fileName, title] of [
   });
 }
 
-test("popup exposes the primary focus actions and receives a background response", async ({
+test("popup exposes the current-site time summary and receives a background response", async ({
   openExtensionPage
 }) => {
   const page = await openExtensionPage("popup.html");
@@ -86,14 +96,10 @@ test("popup exposes the primary focus actions and receives a background response
     result: { ok: true }
   });
 
-  await expect(page.getByTestId("popup-focus-toggle")).toBeVisible();
   await expect(page.getByTestId("popup-today-time")).toBeVisible();
-  await expect(page.getByTestId("popup-open-settings")).toBeVisible();
-  await expect(page.getByTestId("popup-open-config")).toBeVisible();
+  await expect(page.getByTestId("popup-remaining-time")).toBeVisible();
   await expect(page.getByTestId("popup-open-dashboard")).toBeVisible();
-  await expect(page.getByTestId("popup-open-plan")).toBeVisible();
-  await expect(page.getByTestId("popup-plan-mode-toggle")).toBeVisible();
-  await expect(page.getByTestId("popup-manage-plan")).toBeVisible();
+  await expect(page.getByRole("checkbox")).toHaveCount(0);
 });
 
 test("plan starts the explicitly selected website", async ({
@@ -109,10 +115,8 @@ test("plan starts the explicitly selected website", async ({
   });
 
   const planPage = await openExtensionPage("plan.html");
-  await expect(planPage.getByTestId("plan-mode-toggle")).toBeVisible();
-  if (!(await planPage.getByTestId("plan-mode-toggle").isChecked())) {
-    await planPage.getByTestId("plan-mode-toggle").click();
-  }
+  await expect(planPage.getByTestId("plan-mode-toggle")).toHaveCount(0);
+  await planPage.getByTestId("plan-add-open").click();
   await planPage.getByTestId("plan-add-url").fill(plannedUrl);
   await planPage.getByTestId("plan-add-title").fill("端到端计划页面");
   await planPage.getByTestId("plan-add-submit").click();
@@ -127,7 +131,25 @@ test("plan starts the explicitly selected website", async ({
 test("configuration handles a new profile with no websites", async ({ openExtensionPage }) => {
   const page = await openExtensionPage("options.html");
   await expect(page.getByRole("heading", { name: "还没有可配置的网站" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "打开设置" })).toHaveAttribute("href", "home.html");
+  await expect(page.getByTestId("site-add-button")).toBeVisible();
+});
+
+test("full pages share a centered top navigation", async ({ openExtensionPage }) => {
+  for (const [fileName, currentLabel] of [
+    ["dashboard.html", "仪表盘"],
+    ["plan.html", "计划"],
+    ["options.html", "配置"],
+    ["home.html", "设置"]
+  ] as const) {
+    const page = await openExtensionPage(fileName);
+    const navigation = page.getByRole("navigation", { name: "Hourleaf 主导航" });
+    await expect(navigation).toBeVisible();
+    await expect(navigation.getByRole("link")).toHaveCount(4);
+    await expect(navigation.getByRole("link", { name: currentLabel })).toHaveAttribute(
+      "aria-current",
+      "page"
+    );
+  }
 });
 
 test("dashboard exposes every supported range and chart fallback", async ({

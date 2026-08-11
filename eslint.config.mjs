@@ -3,7 +3,9 @@ import globals from "globals";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
-  { ignores: ["dist/**", "coverage/**", "safari/**", "node_modules/**"] },
+  {
+    ignores: ["dist/**", "coverage/**", "safari/**", "node_modules/**", "optional-modules/**/*.js"]
+  },
   eslint.configs.recommended,
   ...tseslint.configs.recommendedTypeChecked,
   {

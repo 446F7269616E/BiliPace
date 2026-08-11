@@ -12,8 +12,8 @@ export interface AppPageItem {
 export const APP_PAGE_ITEMS: ReadonlyArray<AppPageItem> = [
   { id: "dashboard", href: "dashboard.html", label: "仪表盘", icon: "bar-chart" },
   { id: "plan", href: "plan.html", label: "计划", icon: "calendar" },
-  { id: "options", href: "options.html", label: "配置", icon: "settings" },
-  { id: "home", href: "home.html", label: "设置", icon: "home" }
+  { id: "options", href: "options.html", label: "配置", icon: "clock" },
+  { id: "home", href: "home.html", label: "设置", icon: "settings" }
 ];
 
 export interface PageNavigationOptions {
@@ -21,7 +21,7 @@ export interface PageNavigationOptions {
   actions?: ReadonlyArray<HTMLElement | null | undefined>;
 }
 
-/** Shared sidebar for every full extension page. */
+/** Shared, centered top bar for every full extension page. */
 export function createPageNavigation({
   currentPage,
   actions = []
@@ -44,7 +44,7 @@ export function createPageNavigation({
     (action): action is HTMLElement => action instanceof HTMLElement
   );
 
-  return element("aside", {
+  return element("header", {
     className: "app-navigation",
     children: [
       createBrand(),

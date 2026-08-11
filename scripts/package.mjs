@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import process from "node:process";
@@ -30,10 +30,52 @@ await mkdir(releaseDir, { recursive: true });
 const checksums = [];
 
 for (const target of ["chromium", "firefox", "safari"]) {
+  await assertStoreCandidate(target, path.join(root, "dist", target));
   await archiveDirectory(
     path.join(root, "dist", target),
     `${packageName}-${version}-${target}.zip`
   );
+}
+
+/** @param {string} target @param {string} sourceDir */
+async function assertStoreCandidate(target, sourceDir) {
+  const entries = new Set(await readdir(sourceDir));
+  for (const forbidden of ["modules", "optional-modules"]) {
+    if (entries.has(forbidden)) {
+      throw new Error(`${target} store candidate contains forbidden directory: ${forbidden}`);
+    }
+  }
+  /** @type {unknown} */
+  const rawManifest = JSON.parse(await readFile(path.join(sourceDir, "manifest.json"), "utf8"));
+  if (!rawManifest || typeof rawManifest !== "object") {
+    throw new Error(`${target} store candidate has an invalid manifest`);
+  }
+  const manifest = /** @type {Record<string, unknown>} */ (rawManifest);
+  if (manifest.version !== version) {
+    throw new Error(`${target} manifest version does not match package.json`);
+  }
+  const permissions = toStringSet(manifest.permissions);
+  const optionalPermissions = toStringSet(manifest.optional_permissions);
+  if (!permissions.has("declarativeNetRequestWithHostAccess")) {
+    throw new Error(`${target} store candidate is missing the safe DNR adapter permission`);
+  }
+  if (target === "chromium" && !permissions.has("userScripts")) {
+    throw new Error("Chromium user-provided code must use the User Scripts API");
+  }
+  if (target === "firefox" && !optionalPermissions.has("userScripts")) {
+    throw new Error("Firefox userScripts must remain optional");
+  }
+  if (
+    target === "safari" &&
+    (permissions.has("userScripts") || optionalPermissions.has("userScripts"))
+  ) {
+    throw new Error("Safari App Store candidates must not request userScripts");
+  }
+}
+
+/** @param {unknown} value */
+function toStringSet(value) {
+  return new Set(Array.isArray(value) ? value.filter((item) => typeof item === "string") : []);
 }
 
 await writeFile(path.join(releaseDir, "SHA256SUMS"), `${checksums.join("\n")}\n`, "utf8");

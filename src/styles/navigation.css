@@ -1,33 +1,35 @@
 .app-shell:has(> .app-navigation) {
-  width: min(100%, 1340px);
-  padding-left: 244px;
+  width: min(100%, 1180px);
 }
 
 .app-navigation {
-  position: fixed;
+  position: sticky;
   z-index: 20;
-  top: var(--space-6);
-  bottom: var(--space-6);
-  left: max(var(--space-6), calc((100vw - 1340px) / 2 + var(--space-6)));
-  display: flex;
-  width: 196px;
-  flex-direction: column;
-  gap: var(--space-6);
-  padding: var(--space-4);
+  top: var(--space-3);
+  display: grid;
+  width: min(100%, 860px);
+  min-height: 62px;
+  grid-template-columns: minmax(150px, 1fr) auto minmax(150px, 1fr);
+  align-items: center;
+  gap: var(--space-4);
+  padding: 8px 10px;
+  margin: 0 auto var(--space-7);
   background: color-mix(in srgb, var(--color-surface) 94%, transparent);
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
+  border-radius: 999px;
   box-shadow: var(--shadow-sm);
   backdrop-filter: blur(18px);
 }
 
 .app-navigation__brand {
-  padding: 2px;
+  justify-self: start;
+  padding-inline: 2px 8px;
 }
 
 .app-navigation__pages {
-  display: grid;
-  gap: 6px;
+  display: flex;
+  justify-content: center;
+  gap: 4px;
 }
 
 .app-navigation__link {
@@ -55,7 +57,7 @@
 }
 
 .app-navigation__link:active {
-  transform: translateX(1px);
+  transform: translateY(1px);
 }
 
 .app-navigation__link[aria-current="page"] {
@@ -64,14 +66,7 @@
 }
 
 .app-navigation__link[aria-current="page"]::before {
-  position: absolute;
-  top: 11px;
-  bottom: 11px;
-  left: 0;
-  width: 3px;
-  content: "";
-  background: var(--color-brand);
-  border-radius: 999px;
+  content: none;
 }
 
 .app-navigation__link .icon {
@@ -80,33 +75,24 @@
 }
 
 .app-navigation__actions {
-  display: grid;
+  display: flex;
+  justify-content: flex-end;
   gap: var(--space-2);
-  margin-top: auto;
 }
 
 .app-navigation__actions .btn {
-  width: 100%;
+  width: auto;
 }
 
 @media (max-width: 900px) {
   .app-shell:has(> .app-navigation) {
     width: min(100%, 1120px);
-    padding-left: var(--space-6);
   }
 
   .app-navigation {
-    position: sticky;
-    top: 0;
-    bottom: auto;
-    left: auto;
-    display: grid;
     width: 100%;
     grid-template-columns: auto minmax(0, 1fr) auto;
-    align-items: center;
-    gap: var(--space-3);
-    padding: 8px;
-    margin-bottom: var(--space-6);
+    border-radius: var(--radius-lg);
   }
 
   .app-navigation__brand .brand__meta {
@@ -114,6 +100,7 @@
   }
 
   .app-navigation__pages {
+    display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
@@ -121,24 +108,6 @@
     justify-content: center;
     gap: 6px;
     padding-inline: 8px;
-  }
-
-  .app-navigation__link[aria-current="page"]::before {
-    top: auto;
-    right: 16px;
-    bottom: 3px;
-    left: 16px;
-    width: auto;
-    height: 2px;
-  }
-
-  .app-navigation__actions {
-    display: flex;
-    margin-top: 0;
-  }
-
-  .app-navigation__actions .btn {
-    width: auto;
   }
 }
 
@@ -151,6 +120,7 @@
     grid-template-columns: 1fr;
     gap: 6px;
     margin-bottom: var(--space-5);
+    border-radius: var(--radius-lg);
   }
 
   .app-navigation__brand {
@@ -179,10 +149,5 @@
   .app-navigation,
   .app-navigation__link[aria-current="page"] {
     border: 1px solid CanvasText;
-  }
-
-  .app-navigation__link[aria-current="page"]::before {
-    background: Highlight;
-    forced-color-adjust: none;
   }
 }

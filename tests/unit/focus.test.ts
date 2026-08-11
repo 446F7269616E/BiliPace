@@ -141,4 +141,21 @@ describe("focus decisions", () => {
       reason: "blocked"
     });
   });
+
+  it("supports direct domain allowlist and blocklist policies", async () => {
+    await settings.update({
+      targets: { [targetId]: { accessPolicy: "always-block", schedules: [] } }
+    });
+    expect(await decisions.decide(managedUrl, new Date())).toMatchObject({
+      blocked: true,
+      reason: "domain-block",
+      canRequestTemporaryAccess: false
+    });
+
+    await settings.update({ targets: { [targetId]: { accessPolicy: "always-allow" } } });
+    expect(await decisions.decide(managedUrl, new Date())).toMatchObject({
+      blocked: false,
+      reason: "domain-allow"
+    });
+  });
 });

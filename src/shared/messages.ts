@@ -24,6 +24,12 @@ import {
   MAX_PLAN_TITLE_LENGTH,
   normalizePlanItemInput
 } from "./plan";
+import type {
+  LocalModuleDefinition,
+  LocalModuleSnapshot,
+  LocalPageRules
+} from "../modules/local/types";
+import { normalizeLocalModuleDefinition } from "../modules/local/validation";
 
 export type SessionEvent = "start" | "heartbeat" | "route" | "stop";
 
@@ -65,6 +71,17 @@ export interface MessageContract {
     response: SiteModuleStore;
   };
   UNINSTALL_SITE_MODULE: { request: { moduleId: string }; response: SiteModuleStore };
+  GET_LOCAL_MODULES: { request: Record<never, unknown>; response: LocalModuleSnapshot };
+  IMPORT_LOCAL_MODULE: {
+    request: { module: LocalModuleDefinition };
+    response: LocalModuleSnapshot;
+  };
+  SET_LOCAL_MODULE_ENABLED: {
+    request: { moduleId: string; enabled: boolean };
+    response: LocalModuleSnapshot;
+  };
+  REMOVE_LOCAL_MODULE: { request: { moduleId: string }; response: LocalModuleSnapshot };
+  GET_LOCAL_PAGE_RULES: { request: { url: string }; response: LocalPageRules };
   GET_TRACKING_STATUS: { request: Record<never, unknown>; response: TrackingStatus };
   GET_PLAN_STATE: { request: Record<never, unknown>; response: PlanState };
   SET_PLAN_MODE: {
@@ -183,6 +200,7 @@ export function parseMessageRequest(
       break;
     case "GET_MANAGED_SITES":
     case "GET_SITE_MODULES":
+    case "GET_LOCAL_MODULES":
       request = { type: value.type };
       break;
     case "UPDATE_SETTINGS":
@@ -240,6 +258,7 @@ export function parseMessageRequest(
         !hasOnlyKeys(payload.patch, [
           "label",
           "enabled",
+          "accessPolicy",
           "dailyLimitMinutes",
           "schedules",
           "temporaryAccess"
@@ -247,6 +266,14 @@ export function parseMessageRequest(
         !isBoundedJson(payload.patch)
       )
         return null;
+      if (
+        payload.patch.accessPolicy !== undefined &&
+        payload.patch.accessPolicy !== "timed" &&
+        payload.patch.accessPolicy !== "always-allow" &&
+        payload.patch.accessPolicy !== "always-block"
+      ) {
+        return null;
+      }
       request = {
         type: value.type,
         targetId: payload.targetId,
@@ -268,6 +295,31 @@ export function parseMessageRequest(
     case "UNINSTALL_SITE_MODULE":
       if (!isOpaqueId(payload.moduleId)) return null;
       request = { type: value.type, moduleId: payload.moduleId };
+      break;
+    case "IMPORT_LOCAL_MODULE": {
+      if (!hasOnlyKeys(payload, ["module"])) return null;
+      const module = normalizeLocalModuleDefinition(payload.module);
+      if (!module) return null;
+      request = { type: value.type, module };
+      break;
+    }
+    case "SET_LOCAL_MODULE_ENABLED":
+      if (
+        !hasOnlyKeys(payload, ["moduleId", "enabled"]) ||
+        !isOpaqueId(payload.moduleId) ||
+        typeof payload.enabled !== "boolean"
+      ) {
+        return null;
+      }
+      request = { type: value.type, moduleId: payload.moduleId, enabled: payload.enabled };
+      break;
+    case "REMOVE_LOCAL_MODULE":
+      if (!hasOnlyKeys(payload, ["moduleId"]) || !isOpaqueId(payload.moduleId)) return null;
+      request = { type: value.type, moduleId: payload.moduleId };
+      break;
+    case "GET_LOCAL_PAGE_RULES":
+      if (!hasOnlyKeys(payload, ["url"]) || !isHttpUrl(payload.url)) return null;
+      request = { type: value.type, url: payload.url };
       break;
     case "SET_PLAN_MODE": {
       if (!hasOnlyKeys(payload, ["enabled", "watchDurationMinutes"])) return null;

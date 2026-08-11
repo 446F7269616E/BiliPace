@@ -13,39 +13,76 @@ test.beforeEach(async ({ context }) => {
   await installWebExtensionMock(context);
 });
 
-test("popup has semantic, keyboard reachable primary actions", async ({ page }) => {
+test("popup has a focused current-site time summary without quick toggles", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto(pathToFileURL(path.join(buildRoot, "popup.html")).href);
 
-  await expect(page.getByRole("checkbox", { name: /^(开启|暂停)专注保护$/ })).toBeVisible();
-  await expect(page.getByRole("link", { name: "打开设置" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "仪表盘", exact: true })).toBeVisible();
-  await expect(page.getByTestId("popup-temp-access")).toBeVisible();
-  await expect(page.getByTestId("popup-today-time")).not.toBeEmpty();
+  await expect(page.getByRole("checkbox")).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "进入 Hourleaf 主界面" })).toBeVisible();
+  await expect(page.getByTestId("popup-today-time")).toHaveText("00:10");
+  await expect(page.getByTestId("popup-remaining-time")).toHaveText("00:35");
 
   await page.keyboard.press("Tab");
   await expect(page.locator(":focus")).toBeVisible();
   expect(errors).toEqual([]);
 });
 
-test("options exposes labelled section rules and scheduling", async ({ page }) => {
+test("configuration exposes per-website time rules without content filters", async ({ page }) => {
   await page.goto(pathToFileURL(path.join(buildRoot, "options.html")).href);
 
-  await expect(page.getByRole("checkbox", { name: /专注拦截首页/ })).toBeVisible();
-  await expect(page.getByRole("checkbox", { name: /专注拦截动态/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "网站" })).toBeVisible();
+  await expect(page.getByTestId("site-add-button")).toBeVisible();
   await expect(page.getByTestId("schedule-add")).toBeVisible();
   await expect(page.getByTestId("settings-save")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "内容降噪" })).toHaveCount(0);
 });
 
-test("settings exposes website and module management", async ({ page }) => {
+test("settings separates module controls from other plugin settings", async ({ page }) => {
   await page.goto(pathToFileURL(path.join(buildRoot, "home.html")).href);
 
-  await expect(page.getByRole("heading", { name: "网站" })).toBeVisible();
-  await expect(page.getByTestId("site-add-input")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "模块" })).toBeVisible();
-  await expect(page.getByTestId("bilibili-module-action")).toHaveText("启用");
-  await expect(page.getByTestId("bilibili-module-remove")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "模块设置" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "插件其他设置" })).toBeVisible();
+  await expect(page.getByTestId("site-add-input")).toHaveCount(0);
+  await expect(page.getByTestId("module-import-open")).toBeVisible();
+  await expect(page.getByText("还没有本地模块")).toBeVisible();
+  await expect(page.getByText("不会从 GitHub 或其他地址自动下载代码")).toBeVisible();
+});
+
+test("settings imports a user-selected local module without a remote installer", async ({
+  page
+}) => {
+  await page.goto(pathToFileURL(path.join(buildRoot, "home.html")).href);
+  await page.getByTestId("module-import-open").click();
+  await page.getByTestId("module-import-files").setInputFiles([
+    {
+      name: "hourleaf-module.json",
+      mimeType: "application/json",
+      buffer: Buffer.from(
+        JSON.stringify({
+          schemaVersion: 1,
+          id: "example.local.e2e",
+          name: "E2E 本地模块",
+          version: "1.0.0",
+          matches: ["https://example.com/*"],
+          domainPolicy: "timed",
+          hideSelectors: [".recommendations"],
+          cssFiles: ["focus.css"],
+          dnrRules: [],
+          userScriptFiles: []
+        })
+      )
+    },
+    {
+      name: "focus.css",
+      mimeType: "text/css",
+      buffer: Buffer.from(".recommendations { display: none; }")
+    }
+  ]);
+  await expect(page.getByText("E2E 本地模块 1.0.0")).toBeVisible();
+  await page.getByTestId("module-import-confirm").click();
+  await expect(page.getByRole("heading", { name: "E2E 本地模块" })).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: "启用 E2E 本地模块" })).toBeChecked();
 });
 
 test("dashboard exposes day, week and month without color-only data", async ({ page }) => {

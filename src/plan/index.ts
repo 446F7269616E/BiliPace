@@ -10,7 +10,6 @@ const SOURCE_LABELS: Readonly<Record<PlanItemSource, string>> = {
   favorite: "收藏夹"
 };
 
-const WATCH_DURATIONS = [15, 30, 45, 60, 90, 120] as const;
 const PLAN_VIEW_STORAGE_KEY = "hourleaf.plan.view";
 type PlanView = "list" | "mindmap";
 
@@ -88,22 +87,12 @@ function renderError(message: string): void {
   );
 }
 
-function renderPlan(options: { focusItemId?: string; focusAddForm?: boolean } = {}): void {
+function renderPlan(options: { focusItemId?: string } = {}): void {
   if (!state) return;
-  const content = element("div", {
-    children: [
-      createModeCard(state),
-      element("div", {
-        className: "plan-grid",
-        children: [createQueueCard(state), createAside()]
-      })
-    ]
-  });
+  const content = createQueueCard(state);
   app.replaceChildren(createShell(content));
 
-  if (options.focusAddForm) {
-    document.querySelector<HTMLInputElement>("#plan-video-url")?.focus();
-  } else if (options.focusItemId) {
+  if (options.focusItemId) {
     document
       .querySelector<HTMLElement>(`[data-plan-item-id="${cssEscape(options.focusItemId)}"]`)
       ?.focus();
@@ -131,7 +120,7 @@ function createShell(content: HTMLElement): HTMLElement {
 
 function createViewControl(): HTMLElement {
   const views: ReadonlyArray<{ id: PlanView; label: string }> = [
-    { id: "list", label: "列表" },
+    { id: "list", label: "待办列表" },
     { id: "mindmap", label: "思维导图" }
   ];
   return element("div", {
@@ -158,142 +147,57 @@ function createViewControl(): HTMLElement {
   });
 }
 
-function createModeCard(planState: PlanState): HTMLElement {
-  const toggle = element("input", {
-    attrs: {
-      type: "checkbox",
-      checked: planState.settings.enabled,
-      "aria-label": "计划模式",
-      "data-testid": "plan-mode-toggle"
-    }
-  });
-  const switchLabel = element("label", {
-    className: "switch",
-    attrs: { title: planState.settings.enabled ? "暂停计划模式" : "开启计划模式" },
-    children: [toggle]
-  });
-  toggle.addEventListener("change", () => {
-    void updatePlanSettings({ enabled: toggle.checked }, toggle);
-  });
-
-  const durationOptions = Array.from(
-    new Set<number>([...WATCH_DURATIONS, planState.settings.watchDurationMinutes])
-  ).sort((first, second) => first - second);
-  const durationSelect = element("select", {
-    className: "plan-select plan-mode-card__duration",
-    attrs: {
-      "aria-label": "每次可观看时长",
-      "data-testid": "plan-watch-duration"
-    },
-    children: durationOptions.map((minutes) =>
-      element("option", {
-        text: `${minutes} 分钟`,
-        attrs: { value: minutes, selected: minutes === planState.settings.watchDurationMinutes }
-      })
-    )
-  });
-  durationSelect.addEventListener("change", () => {
-    void updatePlanSettings({ watchDurationMinutes: Number(durationSelect.value) }, durationSelect);
-  });
-
-  return element("section", {
-    className: `plan-mode-card card${planState.settings.enabled ? " plan-mode-card--enabled" : ""}`,
-    attrs: { "aria-labelledby": "plan-mode-title" },
-    children: [
-      element("div", {
-        className: "plan-mode-card__body",
-        children: [
-          element("span", {
-            className: "plan-mode-card__icon",
-            children: [icon(planState.settings.enabled ? "lock" : "unlock")]
-          }),
-          element("div", {
-            children: [
-              element("h2", {
-                text: "计划模式",
-                attrs: { id: "plan-mode-title" }
-              })
-            ]
-          })
-        ]
-      }),
-      element("div", {
-        className: "plan-mode-card__control",
-        children: [
-          element("label", {
-            className: "plan-field plan-mode-card__duration-field",
-            children: [element("span", { text: "每次可看多久" }), durationSelect]
-          }),
-          element("span", {
-            className: "plan-mode-card__state",
-            text: planState.settings.enabled ? "已开启" : "已关闭",
-            attrs: { "aria-hidden": "true" }
-          }),
-          switchLabel
-        ]
-      })
-    ]
-  });
-}
-
-async function updatePlanSettings(
-  patch: { enabled?: boolean; watchDurationMinutes?: number },
-  control: HTMLInputElement | HTMLSelectElement
-): Promise<void> {
-  if (!state) return;
-  const previous = state.settings;
-  control.disabled = true;
-  try {
-    state =
-      patch.enabled !== undefined
-        ? await sendRequest({ type: "SET_PLAN_MODE", enabled: patch.enabled })
-        : await sendRequest({
-            type: "SET_PLAN_MODE",
-            watchDurationMinutes: patch.watchDurationMinutes
-          });
-    toast(state.settings.enabled ? "计划模式设置已更新" : "计划模式已暂停");
-    renderPlan();
-  } catch (error) {
-    control.disabled = false;
-    if (control instanceof HTMLInputElement && patch.enabled !== undefined) {
-      control.checked = previous.enabled;
-    }
-    if (control instanceof HTMLSelectElement) control.value = String(previous.watchDurationMinutes);
-    toast(describeError(error), "error");
-  }
-}
-
 function createQueueCard(planState: PlanState): HTMLElement {
   const pending = sortedItems(planState, "pending");
-  const timeSortedPending = [...pending].sort(
-    (first, second) => first.addedAt - second.addedAt || first.order - second.order
-  );
   const completed = sortedItems(planState, "completed");
   const total = pending.length + completed.length;
   const completion = total > 0 ? Math.round((completed.length / total) * 100) : 0;
 
-  return element("div", {
-    className: "plan-main",
+  const add = element("button", {
+    className: "btn btn--primary",
+    attrs: { type: "button", "data-testid": "plan-add-open" },
+    children: [icon("plus"), "添加待办"]
+  });
+  add.addEventListener("click", openAddDialog);
+  const bulk = element("button", {
+    className: "btn",
+    attrs: { type: "button", "data-testid": "plan-bulk-import" },
+    children: [icon("plus"), "批量添加"]
+  });
+  bulk.addEventListener("click", openBulkImportDialog);
+
+  return element("section", {
+    className: "card plan-card plan-workspace",
+    attrs: { "aria-labelledby": "plan-workspace-title" },
     children: [
-      element("section", {
-        className: "card plan-card",
-        attrs: { "aria-labelledby": "plan-queue-title" },
+      element("div", {
+        className: "plan-card__header plan-workspace__header",
         children: [
           element("div", {
-            className: "plan-card__header",
+            className: "plan-workspace__title",
             children: [
-              element("div", {
-                children: [element("h2", { text: "待办", attrs: { id: "plan-queue-title" } })]
+              element("h2", {
+                text: planView === "list" ? "待办列表" : "思维导图",
+                attrs: { id: "plan-workspace-title" }
               }),
               createProgress(pending.length, completed.length, completion)
             ]
           }),
-          planView === "list"
-            ? createItemSection("待办", timeSortedPending, false, "list")
-            : createMindmap(pending),
-          createItemSection("已完成", completed, true, "list")
+          element("div", { className: "plan-workspace__actions", children: [bulk, add] })
         ]
-      })
+      }),
+      planView === "list" ? createListView(pending, completed) : createMindmap(pending, completed)
+    ]
+  });
+}
+
+function createListView(pending: PlanItem[], completed: PlanItem[]): HTMLElement {
+  return element("div", {
+    className: "plan-list-view",
+    attrs: { "aria-label": "纵向待办列表" },
+    children: [
+      createItemSection("待办", pending, false, "list"),
+      createItemSection("已完成", completed, true, "list")
     ]
   });
 }
@@ -373,30 +277,52 @@ function createItemSection(
   });
 }
 
-function createMindmap(items: PlanItem[]): HTMLElement {
+function createMindmap(pending: PlanItem[], completed: PlanItem[]): HTMLElement {
   return element("section", {
-    className: "plan-section plan-mindmap",
-    attrs: { "aria-labelledby": "plan-pending-title" },
+    className: "plan-mindmap",
+    attrs: { "aria-label": "横向思维导图" },
     children: [
-      items.length > 0
-        ? element("div", {
-            className: "plan-mindmap__canvas",
+      element("div", {
+        className: "plan-mindmap__canvas",
+        children: [
+          element("div", { className: "plan-mindmap__root", text: "计划" }),
+          element("div", {
+            className: "plan-mindmap__branches",
             children: [
-              element("div", {
-                className: "plan-mindmap__root",
-                text: "待办",
-                attrs: { id: "plan-pending-title" }
-              }),
-              element("ol", {
-                className: "plan-mindmap__track",
-                attrs: { "aria-label": "可排序的计划节点" },
-                children: items.map((item, index) =>
-                  createPlanItem(item, index, items.length, "mindmap")
-                )
-              })
+              createMindmapBranch("待办", pending, false),
+              createMindmapBranch("已完成", completed, true)
             ]
           })
-        : createEmpty(false)
+        ]
+      })
+    ]
+  });
+}
+
+function createMindmapBranch(title: string, items: PlanItem[], completed: boolean): HTMLElement {
+  return element("section", {
+    className: `plan-mindmap__branch${completed ? " plan-mindmap__branch--complete" : ""}`,
+    attrs: { "aria-labelledby": `plan-mindmap-${completed ? "completed" : "pending"}-title` },
+    children: [
+      element("h2", {
+        className: "plan-mindmap__branch-title",
+        text: `${title} ${items.length}`,
+        attrs: { id: `plan-mindmap-${completed ? "completed" : "pending"}-title` }
+      }),
+      items.length > 0
+        ? element("ol", {
+            className: "plan-mindmap__track",
+            attrs: {
+              "aria-label": completed ? "已完成计划节点" : "可排序的待办计划节点"
+            },
+            children: items.map((item, index) =>
+              createPlanItem(item, index, items.length, "mindmap")
+            )
+          })
+        : element("div", {
+            className: "plan-mindmap__empty",
+            text: completed ? "暂无完成记录" : "暂无待办"
+          })
     ]
   });
 }
@@ -426,6 +352,7 @@ function createPlanItem(
   variant: PlanView
 ): HTMLElement {
   const complete = item.status === "completed";
+  const sortable = !complete && editingItemId !== item.id;
   const content =
     editingItemId === item.id
       ? createEditForm(item)
@@ -486,16 +413,16 @@ function createPlanItem(
   });
 
   const itemElement = element("li", {
-    className: `plan-item${complete ? " plan-item--complete" : ""}${variant === "mindmap" ? " plan-item--mindmap" : ""}`,
+    className: `plan-item plan-item--${variant}${complete ? " plan-item--complete" : ""}`,
     attrs: {
-      tabindex: "-1",
-      draggable: variant === "mindmap" && !complete ? "true" : undefined,
-      ...(variant === "mindmap" && !complete ? { "aria-grabbed": "false" } : {})
+      tabindex: "0",
+      draggable: sortable ? "true" : undefined,
+      ...(sortable ? { "aria-grabbed": "false" } : {})
     },
     dataset: { planItemId: item.id },
     children: [completeButton, content]
   });
-  if (variant === "mindmap" && !complete) enableMindmapDrag(itemElement, item);
+  if (sortable) enableItemSorting(itemElement, item, variant);
   return itemElement;
 }
 
@@ -515,13 +442,11 @@ function createItemActions(
       children: [icon("play"), "开始"]
     });
     start.addEventListener("click", () => void startWatching(item, start));
-    actions.push(start);
-    if (variant === "mindmap") {
-      actions.push(
-        createMoveButton(item, "up", index === 0),
-        createMoveButton(item, "down", index === siblingCount - 1)
-      );
-    }
+    actions.push(
+      start,
+      createMoveButton(item, "up", index === 0, variant),
+      createMoveButton(item, "down", index === siblingCount - 1, variant)
+    );
   } else {
     const restore = element("button", {
       className: "btn btn--soft",
@@ -557,11 +482,19 @@ function createItemActions(
 function createMoveButton(
   item: PlanItem,
   direction: "up" | "down",
-  disabled: boolean
+  disabled: boolean,
+  variant: PlanView
 ): HTMLButtonElement {
-  const label = direction === "up" ? "前移" : "后移";
+  const label =
+    variant === "mindmap"
+      ? direction === "up"
+        ? "左移"
+        : "右移"
+      : direction === "up"
+        ? "上移"
+        : "下移";
   const button = element("button", {
-    className: "btn btn--icon plan-move-button",
+    className: `btn btn--icon plan-move-button plan-move-button--${variant}`,
     attrs: {
       type: "button",
       title: label,
@@ -571,7 +504,7 @@ function createMoveButton(
     },
     children: [icon("chevron")]
   });
-  button.addEventListener("click", () => void moveMindmapItem(item, direction, button));
+  button.addEventListener("click", () => void movePlanItem(item, direction, button));
   return button;
 }
 
@@ -652,22 +585,22 @@ async function setCompleted(
   }
 }
 
-async function moveMindmapItem(
+async function movePlanItem(
   item: PlanItem,
   direction: "up" | "down",
-  control: HTMLButtonElement
+  control?: HTMLButtonElement
 ): Promise<void> {
   if (!state) return;
   const pending = sortedItems(state, "pending");
   const index = pending.findIndex((candidate) => candidate.id === item.id);
   const target = pending[index + (direction === "up" ? -1 : 1)];
   if (!target) return;
-  control.disabled = true;
-  await reorderMindmapItems(item.id, target.id, direction === "up" ? "before" : "after");
-  control.disabled = false;
+  if (control) control.disabled = true;
+  await reorderPlanItems(item.id, target.id, direction === "up" ? "before" : "after");
+  if (control) control.disabled = false;
 }
 
-function enableMindmapDrag(itemElement: HTMLLIElement, item: PlanItem): void {
+function enableItemSorting(itemElement: HTMLLIElement, item: PlanItem, variant: PlanView): void {
   itemElement.addEventListener("dragstart", (event) => {
     if (!event.dataTransfer) return;
     event.dataTransfer.effectAllowed = "move";
@@ -679,7 +612,7 @@ function enableMindmapDrag(itemElement: HTMLLIElement, item: PlanItem): void {
     event.preventDefault();
     if (!event.dataTransfer) return;
     event.dataTransfer.dropEffect = "move";
-    const position = getDropPosition(itemElement, event.clientX);
+    const position = getDropPosition(itemElement, event, variant);
     itemElement.classList.toggle("plan-item--drop-before", position === "before");
     itemElement.classList.toggle("plan-item--drop-after", position === "after");
   });
@@ -690,10 +623,10 @@ function enableMindmapDrag(itemElement: HTMLLIElement, item: PlanItem): void {
   itemElement.addEventListener("drop", (event) => {
     event.preventDefault();
     const sourceId = event.dataTransfer?.getData("text/plain");
-    const position = getDropPosition(itemElement, event.clientX);
+    const position = getDropPosition(itemElement, event, variant);
     clearDropState(itemElement);
     if (!sourceId || sourceId === item.id) return;
-    void reorderMindmapItems(sourceId, item.id, position);
+    void reorderPlanItems(sourceId, item.id, position);
   });
   itemElement.addEventListener("dragend", () => {
     itemElement.classList.remove("plan-item--dragging");
@@ -702,18 +635,36 @@ function enableMindmapDrag(itemElement: HTMLLIElement, item: PlanItem): void {
       .querySelectorAll<HTMLElement>(".plan-item--drop-before, .plan-item--drop-after")
       .forEach(clearDropState);
   });
+  itemElement.addEventListener("keydown", (event) => {
+    if (!event.altKey || event.target !== itemElement) return;
+    const backwardKey = variant === "mindmap" ? "ArrowLeft" : "ArrowUp";
+    const forwardKey = variant === "mindmap" ? "ArrowRight" : "ArrowDown";
+    if (event.key !== backwardKey && event.key !== forwardKey) return;
+    event.preventDefault();
+    void movePlanItem(item, event.key === backwardKey ? "up" : "down");
+  });
 }
 
-function getDropPosition(element: HTMLElement, pointerX: number): "before" | "after" {
+function getDropPosition(
+  element: HTMLElement,
+  event: DragEvent,
+  variant: PlanView
+): "before" | "after" {
   const bounds = element.getBoundingClientRect();
-  return pointerX < bounds.left + bounds.width / 2 ? "before" : "after";
+  return variant === "mindmap"
+    ? event.clientX < bounds.left + bounds.width / 2
+      ? "before"
+      : "after"
+    : event.clientY < bounds.top + bounds.height / 2
+      ? "before"
+      : "after";
 }
 
 function clearDropState(element: HTMLElement): void {
   element.classList.remove("plan-item--drop-before", "plan-item--drop-after");
 }
 
-async function reorderMindmapItems(
+async function reorderPlanItems(
   sourceId: string,
   targetId: string,
   position: "before" | "after"
@@ -772,22 +723,21 @@ async function deleteItem(item: PlanItem, button: HTMLButtonElement): Promise<vo
     state = await sendRequest({ type: "DELETE_PLAN_ITEM", id: item.id });
     editingItemId = null;
     toast("已从计划中删除");
-    renderPlan({ focusAddForm: true });
+    renderPlan();
+    document.querySelector<HTMLButtonElement>('[data-testid="plan-add-open"]')?.focus();
   } catch (error) {
     button.disabled = false;
     toast(describeError(error), "error");
   }
 }
 
-function createAside(): HTMLElement {
-  return element("aside", {
-    className: "plan-aside",
-    attrs: { "aria-label": "添加与导入计划内容" },
-    children: [createAddCard(), createImportCard()]
-  });
-}
-
-function createAddCard(): HTMLElement {
+function openAddDialog(): void {
+  const existing = document.querySelector<HTMLDialogElement>(".plan-add-dialog");
+  if (existing) {
+    existing.showModal();
+    existing.querySelector<HTMLInputElement>("#plan-video-url")?.focus();
+    return;
+  }
   const url = element("input", {
     className: "plan-input",
     attrs: {
@@ -809,7 +759,7 @@ function createAddCard(): HTMLElement {
       type: "text",
       autocomplete: "off",
       maxlength: MAX_PLAN_TITLE_LENGTH,
-      placeholder: "可选；留空使用内容 ID",
+      placeholder: "可选；留空使用网站名称",
       "data-testid": "plan-add-title"
     }
   });
@@ -822,65 +772,88 @@ function createAddCard(): HTMLElement {
     attrs: { type: "submit", "data-testid": "plan-add-submit" },
     children: [icon("plus"), "加入待办"]
   });
+  const cancel = element("button", { className: "btn", text: "取消", attrs: { type: "button" } });
+  const iconClose = element("button", {
+    className: "btn btn--icon",
+    attrs: { type: "button", title: "关闭", "aria-label": "关闭添加待办" },
+    children: [icon("close")]
+  });
   const form = element("form", {
-    className: "plan-form",
-    attrs: { novalidate: true },
+    className: "plan-dialog__surface plan-form",
+    attrs: { novalidate: true, method: "dialog" },
     children: [
+      element("header", {
+        className: "plan-dialog__header",
+        children: [element("h2", { text: "添加待办", attrs: { id: "plan-add-title" } }), iconClose]
+      }),
       element("div", {
-        className: "plan-card__header",
+        className: "plan-dialog__body plan-form__body",
         children: [
           element("div", {
-            children: [element("h2", { text: "添加待办" })]
+            className: "plan-field",
+            children: [
+              element("label", { text: "内容链接", attrs: { for: "plan-video-url" } }),
+              url,
+              error
+            ]
           }),
-          element("span", { className: "plan-status-pill", text: "本地保存" })
+          element("div", {
+            className: "plan-field",
+            children: [
+              element("label", { text: "标题", attrs: { for: "plan-video-title" } }),
+              title
+            ]
+          })
         ]
       }),
-      element("div", {
-        className: "plan-field",
-        children: [
-          element("label", { text: "内容链接", attrs: { for: "plan-video-url" } }),
-          url,
-          error
-        ]
-      }),
-      element("div", {
-        className: "plan-field",
-        children: [
-          element("label", { text: "自定义标题", attrs: { for: "plan-video-title" } }),
-          title
-        ]
-      }),
-      element("div", { className: "plan-form__actions", children: [submit] })
+      element("footer", { className: "plan-dialog__footer", children: [cancel, submit] })
     ]
+  });
+  const dialog = element("dialog", {
+    className: "plan-dialog plan-add-dialog",
+    attrs: { "aria-labelledby": "plan-add-title" },
+    children: [form]
   });
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     error.hidden = true;
     url.removeAttribute("aria-invalid");
-    void addItem(url, title, error, submit);
+    void addItem(url, title, error, submit, dialog);
   });
-
-  return element("section", { className: "card plan-card", children: [form] });
+  const closeDialog = () => dialog.close();
+  cancel.addEventListener("click", closeDialog);
+  iconClose.addEventListener("click", closeDialog);
+  dialog.addEventListener("click", (event) => {
+    if (event.target === dialog) dialog.close();
+  });
+  dialog.addEventListener("close", () => dialog.remove(), { once: true });
+  document.body.append(dialog);
+  dialog.showModal();
+  url.focus();
 }
 
 async function addItem(
   urlInput: HTMLInputElement,
   titleInput: HTMLInputElement,
   error: HTMLElement,
-  submit: HTMLButtonElement
+  submit: HTMLButtonElement,
+  dialog: HTMLDialogElement
 ): Promise<void> {
   const url = urlInput.value.trim();
   const title = titleInput.value.trim();
   if (!url) {
-    showFieldError(urlInput, error, "当前站点模块不支持此链接");
+    showFieldError(urlInput, error, "请输入有效的 HTTP 或 HTTPS 链接");
     return;
   }
   setButtonBusy(submit, true, "正在添加…");
   try {
+    const previousIds = new Set(state?.queue.items.map((item) => item.id) ?? []);
     state = await sendRequest({ type: "ADD_PLAN_ITEM", url, ...(title ? { title } : {}) });
+    const addedItem = state.queue.items.find((item) => !previousIds.has(item.id));
     editingItemId = null;
+    dialog.close();
     toast("已加入待办");
-    renderPlan({ focusAddForm: true });
+    renderPlan(addedItem ? { focusItemId: addedItem.id } : {});
   } catch (caught) {
     setButtonBusy(submit, false);
     showFieldError(urlInput, error, describeError(caught));
@@ -892,32 +865,6 @@ function showFieldError(input: HTMLInputElement, output: HTMLElement, message: s
   output.textContent = message;
   output.hidden = false;
   input.focus();
-}
-
-function createImportCard(): HTMLElement {
-  const bulk = element("button", {
-    className: "btn btn--primary btn--block",
-    attrs: { type: "button", "data-testid": "plan-bulk-import" },
-    children: [icon("plus"), "批量粘贴内容链接"]
-  });
-  bulk.addEventListener("click", openBulkImportDialog);
-
-  return element("section", {
-    className: "card plan-card plan-import-card",
-    attrs: { "aria-labelledby": "plan-import-title" },
-    children: [
-      element("div", {
-        className: "plan-import-card__intro",
-        children: [
-          element("span", { className: "plan-import-card__icon", children: [icon("refresh")] }),
-          element("div", {
-            children: [element("h2", { text: "批量添加", attrs: { id: "plan-import-title" } })]
-          })
-        ]
-      }),
-      bulk
-    ]
-  });
 }
 
 function openBulkImportDialog(): void {

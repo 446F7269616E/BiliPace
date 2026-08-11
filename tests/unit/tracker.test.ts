@@ -29,6 +29,7 @@ describe("usage tracker", () => {
 
     now = 20_000;
     tracker.handleSessionUpdate(tab, "heartbeat", "session-123", tab.url, "hidden");
+    await vi.waitFor(() => expect(recordInterval).toHaveBeenCalledTimes(2));
     now = 35_000;
     await tracker.flush();
     expect(recordInterval).toHaveBeenCalledTimes(2);

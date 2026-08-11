@@ -38,8 +38,6 @@ for (const target of targets) await buildExtension(target);
 async function buildExtension(target) {
   const outdir = path.join(root, "dist", target);
   await rm(outdir, { recursive: true, force: true });
-  await mkdir(path.join(outdir, "modules"), { recursive: true });
-
   await build({
     entryPoints: extensionEntries,
     outdir,
@@ -49,22 +47,12 @@ async function buildExtension(target) {
     entryNames: "[name]",
     sourcemap: false,
     minify: false,
+    define: {
+      __HOURLEAF_BROWSER_TARGET__: JSON.stringify(target)
+    },
     legalComments: "none",
     logLevel: "info"
   });
-  await build({
-    entryPoints: { bilibili: path.join(root, "src/modules/bilibili/content-module.ts") },
-    outdir: path.join(outdir, "modules"),
-    bundle: true,
-    format: "iife",
-    target: browserTarget(target),
-    entryNames: "[name]",
-    sourcemap: false,
-    minify: false,
-    legalComments: "none",
-    logLevel: "info"
-  });
-
   await cp(path.join(root, "static"), outdir, { recursive: true });
   const stylesOutdir = path.join(outdir, "styles");
   await mkdir(stylesOutdir, { recursive: true });

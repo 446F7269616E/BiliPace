@@ -68,13 +68,14 @@ describe("generic plan", () => {
   });
 
   it("grants only the explicitly started URL for the configured duration", async () => {
-    await service.setMode({ enabled: true, watchDurationMinutes: 30 });
+    await service.setMode({ watchDurationMinutes: 30 });
     let state = await service.add({ url: "https://example.com/focus", title: "Focus" });
     const item = state.queue.items[0];
     expect(item).toBeDefined();
 
     const started = await service.start(item?.id ?? "missing");
     expect(started.url).toBe("https://example.com/focus");
+    expect(started.state.settings.enabled).toBe(true);
     await expect(service.decideNavigation(started.url)).resolves.toMatchObject({
       allowed: true,
       reason: "authorized",
@@ -87,6 +88,7 @@ describe("generic plan", () => {
 
     state = await service.setCompleted(item?.id ?? "missing", true);
     expect(state.activeGrant).toBeUndefined();
+    expect(state.settings.enabled).toBe(false);
   });
 
   it("expires grants without backdating or extending them", async () => {
@@ -98,6 +100,22 @@ describe("generic plan", () => {
     await expect(service.decideNavigation("https://example.com/today")).resolves.toMatchObject({
       allowed: false,
       reason: "expired"
+    });
+    const expiredState = await service.getState();
+    expect(expiredState.settings.enabled).toBe(false);
+    expect(expiredState).not.toHaveProperty("activeGrant");
+  });
+
+  it("recovers a legacy enabled mode that has no active plan item", async () => {
+    await service.setMode({ enabled: true });
+
+    await expect(service.decideNavigation("https://example.com/unplanned")).resolves.toMatchObject({
+      planModeEnabled: false,
+      allowed: true,
+      reason: "disabled"
+    });
+    await expect(service.getState()).resolves.toMatchObject({
+      settings: { enabled: false }
     });
   });
 

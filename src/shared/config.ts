@@ -287,6 +287,10 @@ function normalizeManagedConfiguration(
       siteId: site.id,
       label: normalizeLabel(rawValue.label, site.label),
       enabled: typeof rawValue.enabled === "boolean" ? rawValue.enabled : true,
+      accessPolicy:
+        rawValue.accessPolicy === "always-allow" || rawValue.accessPolicy === "always-block"
+          ? rawValue.accessPolicy
+          : "timed",
       dailyLimitMinutes: normalizeDailyLimit(rawValue.dailyLimitMinutes),
       schedules: Array.isArray(rawValue.schedules)
         ? rawValue.schedules

@@ -9,29 +9,32 @@ Hourleaf 的单一用途是：帮助用户按自己的规则管理网站使用�
 
 - 计时、时段、额度、计划、统计和站点适配必须服务于该用途；
 - 不注入广告，不出售数据，不将浏览活动用于画像或无关分析；
-- 不要求用户安装额外扩展，不从设置页下载或执行模块代码；
+- 不要求用户安装额外扩展，不从设置页、GitHub 或其他 URL 自动下载模块；
 - 商店说明、权限理由、隐私政策和实际行为必须一致。
 
 ## 权限预算
 
-| 能力             | 权限                        | 约束                                                                  |
-| ---------------- | --------------------------- | --------------------------------------------------------------------- |
-| 本地设置与统计   | `storage`                   | 不使用云同步或遥测                                                    |
-| 排除设备离开时间 | `idle`（平台支持时）        | 只判断 active/idle/locked                                             |
-| 注册已授权网站   | `scripting`                 | 只注册到配置中且仍获授权的精确来源                                    |
-| 用户选择的网站   | `optional_host_permissions` | `http://*/*`/`https://*/*` 只是请求上限；每次只申请精确 `${origin}/*` |
+| 能力             | 权限                                  | 约束                                                                  |
+| ---------------- | ------------------------------------- | --------------------------------------------------------------------- |
+| 本地设置与统计   | `storage`                             | 不使用云同步或遥测                                                    |
+| 排除设备离开时间 | `idle`（平台支持时）                  | 只判断 active/idle/locked                                             |
+| 注册已授权网站   | `scripting`                           | 只注册到配置中且仍获授权的精确来源                                    |
+| 用户选择的网站   | `optional_host_permissions`           | `http://*/*`/`https://*/*` 只是请求上限；每次只申请精确 `${origin}/*` |
+| 安全网络规则     | `declarativeNetRequestWithHostAccess` | 只应用安全动作，并强制绑定已授权来源                                  |
+| 用户本地脚本     | `userScripts`                         | Chromium 必需/用户另行开启；Firefox 可选；Safari 不声明               |
 
 默认禁止 `tabs`、`history`、`cookies`、`identity`、`webRequest`、`downloads`、`management`、`nativeMessaging`、`debugger` 与 `unlimitedStorage`。新增权限必须有已实现功能、产品内说明和三平台兼容评审，不能只为未来预留。
 
 动态 content script 只能匹配用户已启用且仍持有权限的网站。用户拒绝或撤销权限后，扩展必须安全停用该网站，不能循环弹窗或扩大请求范围。
 
-## 模块与远程代码
+## 本地模块与远程代码
 
 - 扩展不得执行从 GitHub/CDN 下载的普通 JavaScript、WebAssembly、`eval`、`new Function` 或远程动态 import；
-- 模块代码必须预装在同一个审核包中，设置页只能切换本地状态；
-- Chrome、Firefox 与 Safari 的模块都随各自签名扩展一同接受审核；
-- GitHub ZIP 只标为源码或开发侧载产物；
-- 通用 content 脚本不得静态导入站点运行时代码；模块代码块只能在启用且已授权的网站注册。
+- 商店包不得包含 `optional-modules/` 或网站专用脚本；可选模块仅作为 GitHub 源码文件独立分发；
+- 本地模块只能通过文件选择器进入，禁止 URL 安装、远程更新与后台下载；
+- CSS 必须自包含；DNR 只允许安全动作并由核心绑定来源；
+- 用户脚本只能使用浏览器 User Scripts API 的隔离 world，禁止 `eval`、`Function` 与通用脚本注入；
+- Safari 商店版拒绝用户脚本，平台不支持的能力必须显式降级。
 
 参考官方边界：[Chrome MV3 远程代码](https://developer.chrome.com/docs/extensions/develop/migrate/remote-hosted-code)、[Chrome 分发](https://developer.chrome.com/docs/extensions/how-to/distribute)、[Firefox 签名](https://extensionworkshop.com/documentation/publish/signing-and-distribution-overview/)、[Safari 分发](https://developer.apple.com/documentation/safariservices/distributing-your-safari-web-extension)。
 
@@ -53,19 +56,19 @@ Hourleaf 的单一用途是：帮助用户按自己的规则管理网站使用�
 | Firefox  | `dist/firefox`  | 固定 Gecko ID、AMO 签名、准确的数据声明                |
 | Safari   | `dist/safari`   | Xcode 承载 App、Developer ID/App Store 签名与公证/审核 |
 
-模块代码块位于各平台目录的 `modules/`。三平台共用业务与 UI；平台 manifest 只保留实际支持的权限/API。Safari 不支持的 API 必须显式降级，不能让扩展页闪退。
+三平台共用业务与 UI；平台 manifest 只保留实际支持的权限/API。可选模块目录不复制到任何 `dist/<platform>`。Safari 不支持的 API 必须显式降级，不能让扩展页闪退。
 
 ## 静态与手工门禁
 
 - [ ] TypeScript、ESLint、Prettier 与三平台构建通过；
 - [ ] manifest 只有预算内权限，CSP 无远程执行源；
-- [ ] 通用 `content.js` 搜索不到站点选择器、域名或运行时导入；
+- [ ] 商店 ZIP 不包含 `optional-modules/` 文件、网站专用模块代码或可远程执行的模块地址；允许设置页保留只读的 GitHub 可选模块目录链接；
 - [ ] 只有用户点击添加网站时出现精确权限请求；拒绝/撤销可恢复；
 - [ ] 可见、焦点、idle、休眠、跨午夜和 SPA 路由不会重复或虚增计时；
 - [ ] allow/block 优先级、每日额度、临时访问与预设符合领域规则；
-- [ ] 单一扩展可加载，模块停用或删除后表现与通用网站一致；
-- [ ] 模块兼容选择器失效时安全放行，不隐藏整个未知页面；
-- [ ] 固定左侧导航、键盘操作、200% 缩放与读屏名称可用；
+- [ ] 单一扩展可加载，本地模块停用或删除后表现与通用网站一致；
+- [ ] 本地选择器失效时安全放行，不隐藏整个未知页面；
+- [ ] 固定居中置顶导航、键盘操作、200% 缩放与读屏名称可用；
 - [ ] 隐私政策、商店数据披露与抓包结果一致；
 - [ ] 公共仓库与产物不含密钥、证书、profile、账号或用户测试数据。
 

@@ -15,13 +15,17 @@ import {
   PREINSTALLED_SITE_MODULE_MANIFESTS,
   PREINSTALLED_SITE_MODULES
 } from "../modules/preinstalled";
+import { LocalModuleService } from "../modules/local/service";
+import type { PageDecision, TargetId } from "../shared/types";
 
 const api = getExtensionApi();
 const settings = new SettingsRepository();
 const analytics = new AnalyticsService();
 const managedSites = new ManagedSiteService(settings);
 const modules = new SiteModuleRepository(undefined, PREINSTALLED_SITE_MODULE_MANIFESTS);
-const modulesReady = modules.initialize();
+const modulesReady = initializeBundledModules();
+const localModules = new LocalModuleService();
+const localModulesReady = localModules.initialize();
 const resolveManagedTarget = async (url: string, targetId?: string) => {
   const resolved = await managedSites.resolve(url, targetId);
   return resolved ? { siteId: resolved.site.id, target: resolved.target } : null;
@@ -33,9 +37,10 @@ const tracker = new UsageTracker(
   Date.now,
   api,
   (url, at, targetId) =>
-    Promise.all([focus.decide(url, new Date(at), targetId), plan.decideNavigation(url)]).then(
-      ([focusDecision, planDecision]) => !focusDecision.blocked && planDecision.allowed
-    ),
+    Promise.all([
+      decideEffectiveFocus(url, new Date(at), targetId),
+      plan.decideNavigation(url)
+    ]).then(([focusDecision, planDecision]) => !focusDecision.blocked && planDecision.allowed),
   async (url, targetId) => {
     const resolved = await managedSites.resolve(url, targetId);
     return resolved ? { siteId: resolved.site.id, targetId: resolved.target.id } : null;
@@ -83,6 +88,9 @@ if (api) {
     .catch((error: unknown) => {
       console.warn("Hourleaf could not rebuild website registrations", error);
     });
+  void localModulesReady.catch((error: unknown) => {
+    console.warn("Hourleaf could not rebuild local module registrations", error);
+  });
 }
 
 export async function handleMessage(
@@ -110,10 +118,13 @@ export async function handleMessage(
     case "GET_PAGE_DECISION":
       assertUrl(message.url);
       await assertAuthorizedConfiguredUrl(message.url, message.targetId, sender);
-      return focus.decide(message.url, new Date(), message.targetId);
+      return decideEffectiveFocus(message.url, new Date(), message.targetId);
     case "GRANT_TEMPORARY_ACCESS":
       assertUrl(message.url);
       await assertAuthorizedConfiguredUrl(message.url, message.targetId, sender);
+      if ((await localModules.getDomainPolicy(message.url)) !== "timed") {
+        return decideEffectiveFocus(message.url, new Date(), message.targetId);
+      }
       return focus.grant(message.url, new Date(), message.targetId);
     case "GET_MANAGED_SITES":
       assertExtensionPageSender(sender);
@@ -197,6 +208,26 @@ export async function handleMessage(
       if (installation) await managedSites.removeModuleManifest(installation.manifest);
       return modules.uninstall(message.moduleId);
     }
+    case "GET_LOCAL_MODULES":
+      assertExtensionPageSender(sender);
+      await localModulesReady;
+      return localModules.getSnapshot();
+    case "IMPORT_LOCAL_MODULE":
+      assertExtensionPageSender(sender);
+      await localModulesReady;
+      return localModules.import(message.module);
+    case "SET_LOCAL_MODULE_ENABLED":
+      assertExtensionPageSender(sender);
+      await localModulesReady;
+      return localModules.setEnabled(message.moduleId, message.enabled);
+    case "REMOVE_LOCAL_MODULE":
+      assertExtensionPageSender(sender);
+      await localModulesReady;
+      return localModules.remove(message.moduleId);
+    case "GET_LOCAL_PAGE_RULES":
+      await localModulesReady;
+      await assertAuthorizedConfiguredUrl(message.url, undefined, sender);
+      return localModules.getPageRules(message.url);
     case "GET_TRACKING_STATUS":
       await tracker.flush();
       return tracker.getStatus();
@@ -258,6 +289,51 @@ export async function handleMessage(
     default:
       return assertNever(message);
   }
+}
+
+async function decideEffectiveFocus(
+  url: string,
+  now: Date,
+  targetId?: TargetId
+): Promise<PageDecision> {
+  const base = await focus.decide(url, now, targetId);
+  if (
+    base.reason === "not-managed" ||
+    base.reason === "focus-disabled" ||
+    base.reason === "rule-disabled" ||
+    base.reason === "domain-block"
+  ) {
+    return base;
+  }
+  const policy = await localModules.getDomainPolicy(url);
+  if (policy === "always-allow") {
+    return {
+      ...base,
+      blocked: false,
+      reason: "domain-allow",
+      canRequestTemporaryAccess: false
+    };
+  }
+  if (policy === "always-block") {
+    return {
+      ...base,
+      blocked: true,
+      reason: "domain-block",
+      canRequestTemporaryAccess: false
+    };
+  }
+  return base;
+}
+
+async function initializeBundledModules() {
+  const previous = await modules.get();
+  const current = await modules.initialize();
+  for (const [id, installation] of Object.entries(previous.installations)) {
+    if (!current.installations[id]) {
+      await managedSites.removeModuleManifest(installation.manifest).catch(() => undefined);
+    }
+  }
+  return current;
 }
 
 function assertExtensionPageSender(sender?: ExtensionMessageSender): void {

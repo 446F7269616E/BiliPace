@@ -75,7 +75,7 @@ const initialSettings: MockSettings = {
         siteId: "site:bilibili",
         label: section,
         enabled: ["home", "dynamic", "popular"].includes(section),
-        dailyLimitMinutes: null,
+        dailyLimitMinutes: section === "home" ? 45 : null,
         schedules: [],
         temporaryAccess: { enabled: true, durationMinutes: 5, maxUsesPerDay: 3 },
         moduleId: "hourleaf.site.bilibili",
@@ -120,6 +120,10 @@ export async function installWebExtensionMock(context: BrowserContext): Promise<
     const clone = <T>(value: T): T =>
       value === undefined ? value : (JSON.parse(JSON.stringify(value)) as T);
     let settings = clone(seed);
+    let localModules: {
+      schemaVersion: 1;
+      installations: Record<string, Record<string, unknown>>;
+    } = { schemaVersion: 1, installations: {} };
     const localStore: Record<string, unknown> = {};
 
     const storageArea = {
@@ -163,6 +167,7 @@ export async function installWebExtensionMock(context: BrowserContext): Promise<
         type?: string;
         payload?: {
           patch?: Partial<MockSettings>;
+          module?: Record<string, unknown>;
           period?: string;
           enabled?: boolean;
           watchDurationMinutes?: number;
@@ -181,23 +186,78 @@ export async function installWebExtensionMock(context: BrowserContext): Promise<
           case "GET_SITE_MODULES":
             result = ok({
               schemaVersion: 2,
+              installations: {},
+              removedModuleIds: []
+            });
+            break;
+          case "GET_LOCAL_MODULES":
+            result = ok({
+              store: localModules,
+              runtime: {
+                userScripts: "available",
+                declarativeNetRequest: "available",
+                warnings: []
+              }
+            });
+            break;
+          case "IMPORT_LOCAL_MODULE": {
+            const module = payload.module;
+            const moduleId = typeof module?.id === "string" ? module.id : "local:test";
+            localModules = {
+              ...localModules,
               installations: {
-                "hourleaf.site.bilibili": {
-                  manifest: {
-                    id: "hourleaf.site.bilibili",
-                    version: "1.0.0",
-                    name: "Bilibili",
-                    hosts: ["https://www.bilibili.com/*"],
-                    sections: [],
-                    capabilities: []
-                  },
-                  source: "bundled",
+                ...localModules.installations,
+                [moduleId]: {
+                  definition: clone(module),
+                  source: "local-file",
                   enabled: false,
-                  installedAt: 1,
+                  importedAt: 1,
                   updatedAt: 1
                 }
-              },
-              removedModuleIds: []
+              }
+            };
+            result = ok({
+              store: localModules,
+              runtime: {
+                userScripts: "available",
+                declarativeNetRequest: "available",
+                warnings: []
+              }
+            });
+            break;
+          }
+          case "SET_LOCAL_MODULE_ENABLED": {
+            const moduleId = String(payload.moduleId ?? "");
+            const installation = localModules.installations[moduleId];
+            if (installation) installation.enabled = payload.enabled === true;
+            result = ok({
+              store: localModules,
+              runtime: {
+                userScripts: "available",
+                declarativeNetRequest: "available",
+                warnings: []
+              }
+            });
+            break;
+          }
+          case "REMOVE_LOCAL_MODULE":
+            delete localModules.installations[String(payload.moduleId ?? "")];
+            result = ok({
+              store: localModules,
+              runtime: {
+                userScripts: "available",
+                declarativeNetRequest: "available",
+                warnings: []
+              }
+            });
+            break;
+          case "GET_LOCAL_PAGE_RULES":
+            result = ok({ css: "", hideSelectors: [], moduleIds: [] });
+            break;
+          case "ADD_MANAGED_SITE":
+            result = ok({
+              granted: true,
+              origin: new URL(String(payload.url ?? "https://example.com")).origin
             });
             break;
           case "UPDATE_SETTINGS":
@@ -276,6 +336,8 @@ export async function installWebExtensionMock(context: BrowserContext): Promise<
             break;
           case "GET_TRACKING_STATUS":
             result = ok({
+              siteId: "site:bilibili",
+              targetId: "module:bilibili:home",
               section: "home",
               isTracking: true,
               idleState: "active",
@@ -293,6 +355,8 @@ export async function installWebExtensionMock(context: BrowserContext): Promise<
             break;
           case "GET_PAGE_DECISION":
             result = ok({
+              siteId: "site:bilibili",
+              targetId: "module:bilibili:home",
               section: "home",
               blocked: true,
               reason: "blocked",

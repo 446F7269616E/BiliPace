@@ -56,6 +56,16 @@ export class FocusDecisionService {
       };
     }
 
+    if (baseDecision.reason === "domain-block") {
+      return {
+        ...identity,
+        blocked: true,
+        reason: "domain-block",
+        canRequestTemporaryAccess: false,
+        temporaryAccessUsesRemaining: usesRemaining
+      };
+    }
+
     const expiresAt = access.expiresAtByTarget[resolved.target.id] ?? 0;
     if (expiresAt > now.getTime()) {
       return {
@@ -82,7 +92,9 @@ export class FocusDecisionService {
     if (!resolved) return unmanagedDecision();
     const baseDecision = await this.evaluateBaseDecision(settings, resolved.target, now);
     const policy = resolved.target.temporaryAccess;
-    if (!baseDecision.blocked || !policy.enabled) return this.decide(url, now, requestedTargetId);
+    if (!baseDecision.blocked || baseDecision.reason === "domain-block" || !policy.enabled) {
+      return this.decide(url, now, requestedTargetId);
+    }
 
     const today = formatLocalDate(now);
     await this.accessRepository.update((store) => {
@@ -116,8 +128,23 @@ export class FocusDecisionService {
     now: Date
   ): Promise<{
     blocked: boolean;
-    reason: "focus-disabled" | "rule-disabled" | "outside-schedule" | "daily-limit" | "blocked";
+    reason:
+      | "focus-disabled"
+      | "rule-disabled"
+      | "domain-allow"
+      | "domain-block"
+      | "outside-schedule"
+      | "daily-limit"
+      | "blocked";
   }> {
+    if (!settings.enabled) return { blocked: false, reason: "focus-disabled" };
+    if (!target.enabled) return { blocked: false, reason: "rule-disabled" };
+    if (target.accessPolicy === "always-allow") {
+      return { blocked: false, reason: "domain-allow" };
+    }
+    if (target.accessPolicy === "always-block") {
+      return { blocked: true, reason: "domain-block" };
+    }
     const scheduleDecision = shouldBlockTarget(settings.enabled, target, now);
     if (
       scheduleDecision.reason === "focus-disabled" ||

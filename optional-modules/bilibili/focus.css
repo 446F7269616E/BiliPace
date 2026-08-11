@@ -1,0 +1,18 @@
+/*
+ * Hourleaf optional local style.
+ * This file is applied only to the exact origins declared by hourleaf-module.json.
+ */
+
+.bili-video-card,
+.feed-card,
+.video-page-card-small {
+  transition: opacity 120ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bili-video-card,
+  .feed-card,
+  .video-page-card-small {
+    transition: none;
+  }
+}

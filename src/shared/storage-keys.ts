@@ -5,5 +5,6 @@ export const STORAGE_KEYS = {
   temporaryAccess: "bilifocus.temporary-access.v1",
   planQueue: "bilifocus.plan-queue.v1",
   planAccess: "bilifocus.plan-access.v1",
-  modules: "hourleaf.modules.v1"
+  modules: "hourleaf.modules.v1",
+  localModules: "hourleaf.local-modules.v1"
 } as const;

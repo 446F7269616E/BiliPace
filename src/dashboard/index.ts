@@ -1,23 +1,20 @@
 import { sendRequest } from "../shared/messages";
+import { getPrimaryDomain } from "../shared/domain";
 import {
   SECTION_IDS,
   SECTION_LABELS,
   type DailyUsage,
   type FocusSettings,
+  type ManagedSite,
+  type PlanState,
   type SectionId,
+  type SiteModuleInstallation,
+  type SiteModuleStore,
   type TrackingStatus,
   type UsagePeriod,
   type UsageSummary
 } from "../shared/types";
-import {
-  assertAppRoot,
-  describeError,
-  element,
-  formatDuration,
-  icon,
-  setButtonBusy,
-  toast
-} from "../styles/dom";
+import { assertAppRoot, describeError, element, formatDuration, icon } from "../styles/dom";
 import { createPageNavigation } from "../ui/page-navigation";
 
 const SECTION_COLORS: Readonly<Record<SectionId, string>> = {
@@ -41,6 +38,20 @@ let currentPeriod: UsagePeriod = "week";
 let loadSequence = 0;
 let currentUsage: UsageSummary | null = null;
 
+interface SiteUsageStat {
+  id: string;
+  label: string;
+  hostname: string;
+  origin: string;
+  seconds: number;
+}
+
+interface DomainUsageGroup {
+  domain: string;
+  seconds: number;
+  sites: SiteUsageStat[];
+}
+
 document.body.classList.add("dashboard-page");
 void loadDashboard(currentPeriod);
 window.setInterval(() => void refreshLiveDashboard(), 5_000);
@@ -50,14 +61,16 @@ async function loadDashboard(period: UsagePeriod): Promise<void> {
   const sequence = ++loadSequence;
   renderLoading(period);
   try {
-    const [usage, tracking, settings] = await Promise.all([
+    const [usage, tracking, settings, planState, moduleStore] = await Promise.all([
       sendRequest({ type: "GET_USAGE", period }),
       sendRequest({ type: "GET_TRACKING_STATUS" }),
-      sendRequest({ type: "GET_SETTINGS" })
+      sendRequest({ type: "GET_SETTINGS" }),
+      sendRequest({ type: "GET_PLAN_STATE" }).catch(() => null),
+      sendRequest({ type: "GET_SITE_MODULES" }).catch(() => null)
     ]);
     if (sequence !== loadSequence) return;
     currentUsage = usage;
-    renderDashboard(usage, tracking, settings);
+    renderDashboard(usage, tracking, settings, planState, moduleStore);
   } catch (error) {
     if (sequence !== loadSequence) return;
     renderError(period, describeError(error));
@@ -127,22 +140,40 @@ function renderError(period: UsagePeriod, message: string): void {
 function renderDashboard(
   usage: UsageSummary,
   tracking: TrackingStatus,
-  settings: FocusSettings
+  settings: FocusSettings,
+  planState: PlanState | null,
+  moduleStore: SiteModuleStore | null
 ): void {
+  const siteGroups = buildDomainUsageGroups(usage, settings);
+  const enabledModules = Object.values(moduleStore?.installations ?? {}).filter(
+    (installation) =>
+      installation.enabled && installation.manifest.capabilities.includes("usage-tracking")
+  );
   const content = element("div", {
     children: [
-      createOverview(usage, tracking, settings),
-      element("div", {
-        className: "dashboard-grid",
+      element("section", {
+        className: "dashboard-general",
+        attrs: { "aria-labelledby": "general-statistics-title" },
         children: [
-          createTrendCard(usage),
-          element("aside", {
-            className: "dashboard-aside",
-            attrs: { "aria-label": "网站与模块统计" },
-            children: [createScopeCard(usage, settings), createSectionBreakdown(usage, settings)]
+          element("header", {
+            className: "dashboard-section-heading",
+            children: [
+              element("div", {
+                children: [
+                  element("h2", { text: "总统计", attrs: { id: "general-statistics-title" } }),
+                  element("p", { text: "所有已添加网站的时间与计划概览" })
+                ]
+              })
+            ]
+          }),
+          createOverview(usage, tracking, siteGroups, planState),
+          element("div", {
+            className: "dashboard-grid",
+            children: [createTrendCard(usage), createWebsiteBreakdown(siteGroups)]
           })
         ]
       }),
+      ...enabledModules.map((installation) => createModuleBreakdown(installation, usage, settings)),
       createFooter()
     ]
   });
@@ -194,9 +225,11 @@ function createPeriodControl(selected: UsagePeriod): HTMLElement {
 function createOverview(
   usage: UsageSummary,
   tracking: TrackingStatus,
-  settings: FocusSettings
+  siteGroups: readonly DomainUsageGroup[],
+  planState: PlanState | null
 ): HTMLElement {
-  const topTarget = getTopTarget(usage, settings);
+  const topSite = siteGroups.find((group) => group.seconds > 0);
+  const planStats = summarizePlan(planState);
   return element("section", {
     className: "overview-grid",
     attrs: { "aria-label": `${PERIOD_LABELS[usage.period]}概览` },
@@ -204,21 +237,42 @@ function createOverview(
       createMetricCard(
         `${PERIOD_LABELS[usage.period]}总时长`,
         formatDuration(usage.totalSeconds, true),
-        formatDateRange(usage),
+        element("span", {
+          className: "metric-card__note-row",
+          children: [
+            element("span", { text: formatDateRange(usage) }),
+            element("span", {
+              className: "metric-card__live",
+              text: liveTrackingLabel(tracking),
+              attrs: { "data-testid": "dashboard-live-status" }
+            })
+          ]
+        }),
         true,
         "dashboard-total-time"
       ),
       createMetricCard(
-        "实时状态",
-        liveTrackingLabel(tracking),
-        tracking.isTracking ? "时长正在自动更新" : "切走标签页或离开设备后会自动暂停",
-        false,
-        "dashboard-live-status"
+        "最多使用的网站",
+        topSite?.domain ?? "暂无记录",
+        topSite ? formatDuration(topSite.seconds, true) : "当前范围内还没有使用记录"
       ),
       createMetricCard(
-        "最多使用",
-        topTarget?.label ?? "暂无",
-        topTarget ? formatDuration(topTarget.seconds, true) : "还没有产生使用记录"
+        "待办计划用时",
+        planStats ? formatDuration(planStats.pendingSeconds, true) : "暂无数据",
+        planStats
+          ? planStats.pending > 0
+            ? `${planStats.pending} 项 × 每项 ${planStats.minutesPerItem} 分钟`
+            : "当前没有待办事项"
+          : "计划数据暂不可用"
+      ),
+      createMetricCard(
+        "计划完成数",
+        planStats ? `${planStats.completed} / ${planStats.total}` : "暂无数据",
+        planStats
+          ? planStats.total > 0
+            ? `当前计划清单完成率 ${planStats.completionPercentage}%`
+            : "当前计划清单为空"
+          : "计划数据暂不可用"
       )
     ]
   });
@@ -236,7 +290,7 @@ function liveTrackingLabel(tracking: TrackingStatus): string {
 function createMetricCard(
   label: string,
   value: string,
-  note: string,
+  note: string | Node,
   primary = false,
   testId?: string
 ): HTMLElement {
@@ -249,7 +303,10 @@ function createMetricCard(
         text: value,
         attrs: { "data-testid": testId }
       }),
-      element("p", { className: "metric-card__note", text: note })
+      element("p", {
+        className: "metric-card__note",
+        ...(typeof note === "string" ? { text: note } : { children: [note] })
+      })
     ]
   });
 }
@@ -321,227 +378,264 @@ function createTrendCard(usage: UsageSummary): HTMLElement {
   });
 }
 
-function createSectionBreakdown(usage: UsageSummary, settings: FocusSettings): HTMLElement {
-  const targetEntries = Object.entries(usage.byTarget);
-  const rowsData =
-    targetEntries.length > 0
-      ? targetEntries.map(([targetId, value], index) => ({
-          id: targetId,
-          label: settings.targets[targetId]?.label ?? targetId,
-          value,
-          color: Object.values(SECTION_COLORS)[index % SECTION_IDS.length] ?? "#63738f"
-        }))
-      : SECTION_IDS.map((section) => ({
-          id: section,
-          label: SECTION_LABELS[section],
-          value: usage.bySection[section],
-          color: SECTION_COLORS[section]
-        }));
-  const maximum = Math.max(1, ...rowsData.map((row) => row.value));
-  const rows = rowsData
-    .sort((left, right) => right.value - left.value)
-    .map((row) => {
-      const value = row.value;
-      const percentage = Math.max(0, Math.min(100, (value / maximum) * 100));
-      return element("div", {
-        className: "section-total",
-        attrs: { style: `--section-color: ${row.color}` },
+function createWebsiteBreakdown(groups: readonly DomainUsageGroup[]): HTMLElement {
+  const groupRows = groups.map((group) => {
+    const siteRows = group.sites.map((site) =>
+      element("div", {
+        className: "site-group__site",
+        dataset: { siteId: site.id },
         children: [
           element("div", {
-            className: "section-total__header",
+            className: "site-group__identity",
             children: [
-              element("span", {
-                className: "section-total__name",
-                children: [element("span", { className: "section-total__dot" }), row.label]
-              }),
-              element("span", {
-                className: "section-total__value",
-                text: formatDuration(value, true)
-              })
+              element("strong", { text: site.label || site.hostname }),
+              element("span", { text: site.origin })
             ]
           }),
-          element("div", {
-            className: "section-total__track",
-            attrs: {
-              role: "progressbar",
-              "aria-label": `${row.label}时长`,
-              "aria-valuemin": "0",
-              "aria-valuemax": maximum,
-              "aria-valuenow": value
-            },
-            children: [
-              element("div", {
-                className: "section-total__bar",
-                attrs: { style: `width: ${percentage.toFixed(2)}%` }
-              })
-            ]
+          element("span", {
+            className: "site-group__time",
+            text: formatDuration(site.seconds, true)
           })
         ]
-      });
+      })
+    );
+    return element("details", {
+      className: "site-group",
+      dataset: { domain: group.domain },
+      children: [
+        element("summary", {
+          className: "site-group__summary",
+          attrs: {
+            "aria-label": `${group.domain}，${formatDuration(group.seconds, true)}，查看各来源统计`
+          },
+          children: [
+            element("span", {
+              className: "site-group__domain",
+              children: [
+                element("strong", { text: group.domain }),
+                element("span", { text: `${group.sites.length} 个来源` })
+              ]
+            }),
+            element("span", {
+              className: "site-group__summary-value",
+              children: [formatDuration(group.seconds, true), icon("chevron")]
+            })
+          ]
+        }),
+        element("div", { className: "site-group__sites", children: siteRows })
+      ]
     });
+  });
 
   return element("section", {
-    className: "section-breakdown card",
-    attrs: { "aria-labelledby": "breakdown-title", "data-testid": "dashboard-section-list" },
+    className: "site-breakdown card",
+    attrs: {
+      "aria-labelledby": "website-breakdown-title",
+      "data-testid": "dashboard-section-list"
+    },
     children: [
-      element("h2", { text: "规则分类", attrs: { id: "breakdown-title" } }),
-      element("p", { text: "按累计时长从高到低排列" }),
-      element("div", { className: "section-totals", children: rows })
+      element("header", {
+        className: "site-breakdown__header",
+        children: [
+          element("div", {
+            children: [
+              element("h2", { text: "网站使用时间", attrs: { id: "website-breakdown-title" } }),
+              element("p", { text: "同一主域名已合并，展开可查看各来源" })
+            ]
+          }),
+          element("span", { className: "badge", text: `${groups.length} 个主域名` })
+        ]
+      }),
+      groupRows.length > 0
+        ? element("div", { className: "site-groups", children: groupRows })
+        : element("div", {
+            className: "site-breakdown__empty",
+            children: [
+              element("div", { className: "state-view__icon", children: [icon("clock")] }),
+              element("p", { text: "暂无已添加网站" })
+            ]
+          })
     ]
   });
 }
 
-function createScopeCard(usage: UsageSummary, settings: FocusSettings): HTMLElement {
-  const sites = Object.values(settings.sites).sort((left, right) =>
-    left.label.localeCompare(right.label)
-  );
-  const siteRows = sites.map((site) => {
-    const seconds = site.targetIds.reduce(
-      (total, targetId) => total + (usage.byTarget[targetId] ?? 0),
+function createModuleBreakdown(
+  installation: SiteModuleInstallation,
+  usage: UsageSummary,
+  settings: FocusSettings
+): HTMLElement {
+  const manifest = installation.manifest;
+  const rows = manifest.sections.map((section, index) => {
+    const matchingTargets = Object.values(settings.targets).filter(
+      (target) => target.moduleId === manifest.id && target.moduleSectionId === section.id
+    );
+    const targetSeconds = matchingTargets.reduce(
+      (total, target) => total + (usage.byTarget[target.id] ?? 0),
       0
     );
-    return createScopeRow(site.label || site.hostname, formatDuration(seconds, true));
+    const seconds = targetSeconds;
+    return {
+      id: section.id,
+      label: section.label,
+      seconds,
+      color:
+        SECTION_COLORS[section.id as SectionId] ??
+        Object.values(SECTION_COLORS)[index % SECTION_IDS.length] ??
+        "#63738f"
+    };
   });
-  const moduleTotals = new Map<string, number>();
-  for (const target of Object.values(settings.targets)) {
-    if (!target.moduleId) continue;
-    moduleTotals.set(
-      target.moduleId,
-      (moduleTotals.get(target.moduleId) ?? 0) + (usage.byTarget[target.id] ?? 0)
-    );
-  }
-  const moduleRows = [...moduleTotals.entries()].map(([moduleId, seconds]) =>
-    createScopeRow(moduleDisplayName(moduleId), formatDuration(seconds, true))
-  );
+  const maximum = Math.max(1, ...rows.map((row) => row.seconds));
+  const total = rows.reduce((sum, row) => sum + row.seconds, 0);
+  const moduleName = manifest.name;
 
   return element("section", {
-    className: "scope-card card",
-    attrs: { "aria-labelledby": "scope-title" },
+    className: "module-statistics card",
+    attrs: { "aria-labelledby": `module-statistics-${safeDomId(manifest.id)}` },
     children: [
-      element("h2", { text: "网站与模块", attrs: { id: "scope-title" } }),
-      element("div", {
-        className: "scope-card__rows",
+      element("header", {
+        className: "module-statistics__header",
         children: [
-          element("h3", { text: "网站" }),
-          ...(siteRows.length > 0
-            ? siteRows
-            : [element("p", { className: "scope-card__empty", text: "暂无已添加网站" })]),
-          element("h3", { text: "模块" }),
-          ...(moduleRows.length > 0
-            ? moduleRows
-            : [element("p", { className: "scope-card__empty", text: "暂无启用模块" })])
+          element("div", {
+            children: [
+              element("p", { className: "module-statistics__eyebrow", text: "已启用站点模块" }),
+              element("h2", {
+                text: `${moduleName}统计`,
+                attrs: { id: `module-statistics-${safeDomId(manifest.id)}` }
+              }),
+              element("p", { text: "按模块支持的板块统计使用时间" })
+            ]
+          }),
+          element("div", {
+            className: "module-statistics__total",
+            children: [
+              element("span", { text: "合计" }),
+              element("strong", { text: formatDuration(total, true) })
+            ]
+          })
+        ]
+      }),
+      rows.length > 0
+        ? element("div", {
+            className: "module-statistics__rows",
+            children: rows
+              .sort((left, right) => right.seconds - left.seconds)
+              .map((row) => createUsageBar(row.label, row.seconds, maximum, row.color))
+          })
+        : element("p", { className: "module-statistics__empty", text: "此模块暂无分类统计" })
+    ]
+  });
+}
+
+function createUsageBar(label: string, value: number, maximum: number, color: string): HTMLElement {
+  const percentage = Math.max(0, Math.min(100, (value / maximum) * 100));
+  return element("div", {
+    className: "section-total",
+    attrs: { style: `--section-color: ${color}` },
+    children: [
+      element("div", {
+        className: "section-total__header",
+        children: [
+          element("span", {
+            className: "section-total__name",
+            children: [element("span", { className: "section-total__dot" }), label]
+          }),
+          element("span", {
+            className: "section-total__value",
+            text: formatDuration(value, true)
+          })
+        ]
+      }),
+      element("div", {
+        className: "section-total__track",
+        attrs: {
+          role: "progressbar",
+          "aria-label": `${label}使用时长`,
+          "aria-valuemin": "0",
+          "aria-valuemax": maximum,
+          "aria-valuenow": value,
+          "aria-valuetext": formatDuration(value, true)
+        },
+        children: [
+          element("div", {
+            className: "section-total__bar",
+            attrs: { style: `width: ${percentage.toFixed(2)}%` }
+          })
         ]
       })
     ]
   });
 }
 
-function createScopeRow(label: string, value: string): HTMLElement {
-  return element("div", {
-    className: "scope-card__row",
-    children: [element("strong", { text: label }), element("span", { text: value })]
-  });
-}
-
-function moduleDisplayName(moduleId: string): string {
-  return moduleId === "hourleaf.site.bilibili" ? "哔哩哔哩" : moduleId;
-}
-
 function createFooter(): HTMLElement {
-  const clearButton = element("button", {
-    className: "btn btn--danger",
-    text: "清除所有使用数据",
-    attrs: { type: "button" }
-  });
-  clearButton.addEventListener("click", () => openClearDialog());
   return element("footer", {
     className: "dashboard-footer",
-    children: [
-      element("p", { text: "Hourleaf 仅保存网站、分类与聚合时长，不记录页面正文。" }),
-      clearButton
-    ]
+    children: [icon("shield"), element("p", { text: "统计仅包含已添加网站、模块分类与聚合时长。" })]
   });
 }
 
-function openClearDialog(): void {
-  const titleId = "clear-data-title";
-  const backdrop = element("div", { className: "dialog-backdrop" });
-  const cancel = element("button", { className: "btn", text: "取消", attrs: { type: "button" } });
-  const confirm = element("button", {
-    className: "btn btn--danger",
-    text: "永久清除",
-    attrs: { type: "button" }
-  });
-  const close = (): void => backdrop.remove();
-  cancel.addEventListener("click", close);
-  confirm.addEventListener("click", () => {
-    void clearUsage();
-  });
-
-  async function clearUsage(): Promise<void> {
-    setButtonBusy(confirm, true, "正在清除");
-    try {
-      await sendRequest({ type: "CLEAR_USAGE" });
-      close();
-      toast("所有使用数据已清除");
-      await loadDashboard(currentPeriod);
-    } catch (error) {
-      setButtonBusy(confirm, false);
-      toast(describeError(error), "error");
+function buildDomainUsageGroups(usage: UsageSummary, settings: FocusSettings): DomainUsageGroup[] {
+  const groups = new Map<string, DomainUsageGroup>();
+  for (const site of Object.values(settings.sites)) {
+    const stat = createSiteUsageStat(site, usage);
+    const domain = getPrimaryDomain(site.hostname);
+    const existing = groups.get(domain);
+    if (existing) {
+      existing.seconds += stat.seconds;
+      existing.sites.push(stat);
+    } else {
+      groups.set(domain, { domain, seconds: stat.seconds, sites: [stat] });
     }
   }
-  backdrop.addEventListener("mousedown", (event) => {
-    if (event.target === backdrop) close();
-  });
-  backdrop.append(
-    element("section", {
-      className: "dialog",
-      attrs: { role: "dialog", "aria-modal": "true", "aria-labelledby": titleId },
-      children: [
-        element("header", {
-          className: "dialog__header",
-          children: [
-            element("div", {
-              children: [
-                element("h2", { text: "清除所有使用数据？", attrs: { id: titleId } }),
-                element("p", {
-                  className: "muted",
-                  text: "此操作无法撤销。专注设置和计划不会受到影响。"
-                })
-              ]
-            })
-          ]
-        }),
-        element("footer", { className: "dialog__footer", children: [cancel, confirm] })
-      ]
-    })
-  );
-  document.body.append(backdrop);
-  cancel.focus();
+
+  return [...groups.values()]
+    .map((group) => ({
+      ...group,
+      sites: group.sites.sort(
+        (left, right) => right.seconds - left.seconds || left.hostname.localeCompare(right.hostname)
+      )
+    }))
+    .sort((left, right) => right.seconds - left.seconds || left.domain.localeCompare(right.domain));
 }
 
-function getTopTarget(
-  usage: UsageSummary,
-  settings: FocusSettings
-): { id: string; label: string; seconds: number } | null {
-  let top: { id: string; label: string; seconds: number } | null = null;
-  for (const [targetId, seconds] of Object.entries(usage.byTarget)) {
-    if (seconds <= 0 || (top && seconds <= top.seconds)) continue;
-    top = {
-      id: targetId,
-      label: settings.targets[targetId]?.label ?? targetId,
-      seconds
-    };
-  }
-  if (top) return top;
-  const legacySection = SECTION_IDS.find((section) => usage.bySection[section] > 0);
-  return legacySection
-    ? {
-        id: legacySection,
-        label: SECTION_LABELS[legacySection],
-        seconds: usage.bySection[legacySection]
-      }
-    : null;
+function createSiteUsageStat(site: ManagedSite, usage: UsageSummary): SiteUsageStat {
+  const seconds = site.targetIds.reduce(
+    (total, targetId) => total + (usage.byTarget[targetId] ?? 0),
+    0
+  );
+  return {
+    id: site.id,
+    label: site.label,
+    hostname: site.hostname,
+    origin: site.origin,
+    seconds
+  };
+}
+
+function summarizePlan(planState: PlanState | null): {
+  pending: number;
+  completed: number;
+  total: number;
+  pendingSeconds: number;
+  minutesPerItem: number;
+  completionPercentage: number;
+} | null {
+  if (!planState) return null;
+  const completed = planState.queue.items.filter((item) => item.status === "completed").length;
+  const total = planState.queue.items.length;
+  const pending = total - completed;
+  const minutesPerItem = planState.settings.watchDurationMinutes;
+  return {
+    pending,
+    completed,
+    total,
+    pendingSeconds: pending * minutesPerItem * 60,
+    minutesPerItem,
+    completionPercentage: total > 0 ? Math.round((completed / total) * 100) : 0
+  };
+}
+
+function safeDomId(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_-]/g, "-");
 }
 
 function totalForDay(day: DailyUsage): number {

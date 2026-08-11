@@ -117,6 +117,8 @@ export interface SiteTargetSettings {
   siteId: SiteId;
   label: string;
   enabled: boolean;
+  /** Direct domain list behavior; omitted legacy values are treated as timed. */
+  accessPolicy?: "timed" | "always-allow" | "always-block";
   dailyLimitMinutes: number | null;
   schedules: TimeAccessRule[];
   temporaryAccess: TemporaryAccessSettings;
@@ -319,6 +321,8 @@ export interface PageDecision {
     | "outside-schedule"
     | "daily-limit"
     | "temporary-access"
+    | "domain-allow"
+    | "domain-block"
     | "blocked";
   temporaryAccessExpiresAt?: number;
   canRequestTemporaryAccess: boolean;

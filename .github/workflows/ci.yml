@@ -40,13 +40,13 @@ jobs:
       - name: Build all browser targets
         run: npm run build
 
+      - name: Package store candidates
+        run: npm run package
+
       - name: Upload browser artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: hourleaf-browser-builds
-          path: |
-            dist/chromium
-            dist/firefox
-            dist/safari
+          name: hourleaf-store-candidates
+          path: dist/packages
           if-no-files-found: error
           retention-days: 7

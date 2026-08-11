@@ -35,14 +35,26 @@ export class PlanService {
       this.queueRepository.get(),
       this.accessRepository.get()
     ]);
-    const activeGrant = validGrantForQueue(access.activeGrant, queue.items, this.now());
-    if (access.activeGrant && !activeGrant) {
-      await this.accessRepository.update((store) => {
-        delete store.activeGrant;
-      });
+    const validGrant = validGrantForQueue(access.activeGrant, queue.items, this.now());
+    const activeGrant = settings.planMode.enabled ? validGrant : undefined;
+    let planSettings = settings.planMode;
+    const shouldClearGrant = Boolean(access.activeGrant && !activeGrant);
+    const shouldDisableMode = settings.planMode.enabled && !activeGrant;
+    if (shouldClearGrant || shouldDisableMode) {
+      await Promise.all([
+        shouldClearGrant
+          ? this.accessRepository.update((store) => {
+              delete store.activeGrant;
+            })
+          : Promise.resolve(access),
+        shouldDisableMode
+          ? this.settingsRepository.update({ planMode: { enabled: false } })
+          : Promise.resolve(settings)
+      ]);
+      planSettings = { ...planSettings, enabled: false };
     }
     return {
-      settings: settings.planMode,
+      settings: planSettings,
       queue,
       ...(activeGrant ? { activeGrant } : {})
     };
@@ -146,7 +158,6 @@ export class PlanService {
       this.settingsRepository.get(),
       this.queueRepository.get()
     ]);
-    if (!settings.planMode.enabled) throw new Error("Plan mode is not enabled");
     const item = requireItem(queue.items, id);
     if (item.status !== "pending") throw new Error("请先将已完成项目恢复为待办");
     const grantedAt = this.now();
@@ -161,6 +172,14 @@ export class PlanService {
     await this.accessRepository.update((store) => {
       store.activeGrant = grant;
     });
+    try {
+      await this.settingsRepository.update({ planMode: { enabled: true } });
+    } catch (error) {
+      await this.accessRepository.update((store) => {
+        if (store.activeGrant?.itemId === item.id) delete store.activeGrant;
+      });
+      throw error;
+    }
     return { state: await this.getState(), url: item.url, expiresAt: grant.expiresAt };
   }
 
@@ -180,18 +199,22 @@ export class PlanService {
     ]);
     const grant = access.activeGrant;
     if (!grant) {
+      await this.settingsRepository.update({ planMode: { enabled: false } });
       return {
-        planModeEnabled: true,
-        allowed: false,
-        reason: "not-authorized",
+        planModeEnabled: false,
+        allowed: true,
+        reason: "disabled",
         ...(navigationUrl ? { url: navigationUrl } : {}),
         ...(legacyIdentity ? { bvid: legacyIdentity } : {})
       };
     }
     if (grant.expiresAt <= this.now()) {
-      await this.accessRepository.update((store) => {
-        delete store.activeGrant;
-      });
+      await Promise.all([
+        this.accessRepository.update((store) => {
+          delete store.activeGrant;
+        }),
+        this.settingsRepository.update({ planMode: { enabled: false } })
+      ]);
       return {
         planModeEnabled: true,
         allowed: false,
@@ -211,9 +234,12 @@ export class PlanService {
       : Boolean(legacyIdentity && grant.bvid === legacyIdentity);
     if (!item || !identityMatches) {
       if (!item) {
-        await this.accessRepository.update((store) => {
-          delete store.activeGrant;
-        });
+        await Promise.all([
+          this.accessRepository.update((store) => {
+            delete store.activeGrant;
+          }),
+          this.settingsRepository.update({ planMode: { enabled: false } })
+        ]);
       }
       return {
         planModeEnabled: true,
@@ -257,9 +283,13 @@ export class PlanService {
   }
 
   private async clearGrantForItem(id: string): Promise<void> {
+    let cleared = false;
     await this.accessRepository.update((store) => {
-      if (store.activeGrant?.itemId === id) delete store.activeGrant;
+      if (store.activeGrant?.itemId !== id) return;
+      delete store.activeGrant;
+      cleared = true;
     });
+    if (cleared) await this.settingsRepository.update({ planMode: { enabled: false } });
   }
 }
 

@@ -106,6 +106,46 @@ export interface ExtensionApi {
       callback?: (scripts: Array<{ id: string; matches?: string[] }>) => void
     ): unknown;
   };
+  userScripts?: {
+    register(
+      scripts: Array<{
+        id: string;
+        matches: string[];
+        js: Array<{ code: string }>;
+        runAt?: "document_start" | "document_end" | "document_idle";
+        world?: "USER_SCRIPT" | "MAIN";
+        allFrames?: boolean;
+      }>,
+      callback?: () => void
+    ): unknown;
+    unregister(filter?: { ids?: string[] }, callback?: () => void): unknown;
+    getScripts?(
+      filter?: { ids?: string[] },
+      callback?: (scripts: Array<{ id: string }>) => void
+    ): unknown;
+  };
+  declarativeNetRequest?: {
+    getDynamicRules(
+      filter?: { ruleIds?: number[] },
+      callback?: (rules: Array<{ id: number }>) => void
+    ): unknown;
+    updateDynamicRules(
+      update: {
+        removeRuleIds?: number[];
+        addRules?: Array<{
+          id: number;
+          priority: number;
+          action: { type: "block" | "allow" | "upgradeScheme" };
+          condition: {
+            urlFilter: string;
+            initiatorDomains: string[];
+            resourceTypes: string[];
+          };
+        }>;
+      },
+      callback?: () => void
+    ): unknown;
+  };
 }
 
 type ApiMode = "promise" | "callback";
@@ -327,6 +367,85 @@ export async function scriptingGetRegisteredContentScripts(): Promise<
     }>;
   }
   return callbackResult((resolve) => scripting.getRegisteredContentScripts?.({}, resolve));
+}
+
+export function hasUserScriptsApi(): boolean {
+  return Boolean(getApiContext()?.api.userScripts);
+}
+
+export async function userScriptsGetRegistered(): Promise<Array<{ id: string }>> {
+  const context = requireContext();
+  const userScripts = context.api.userScripts;
+  if (!userScripts?.getScripts) return [];
+  if (context.mode === "promise") {
+    return (await userScripts.getScripts({})) as Array<{ id: string }>;
+  }
+  return callbackResult((resolve) => userScripts.getScripts?.({}, resolve));
+}
+
+export async function userScriptsRegister(
+  scripts: Array<{
+    id: string;
+    matches: string[];
+    js: Array<{ code: string }>;
+    runAt: "document_idle";
+    world: "USER_SCRIPT";
+    allFrames: false;
+  }>
+): Promise<void> {
+  const context = requireContext();
+  const userScripts = context.api.userScripts;
+  if (!userScripts) throw new Error("User Scripts API is unavailable");
+  if (context.mode === "promise") {
+    await userScripts.register(scripts);
+    return;
+  }
+  await callbackVoid((resolve) => userScripts.register(scripts, resolve));
+}
+
+export async function userScriptsUnregister(ids?: string[]): Promise<void> {
+  const context = requireContext();
+  const userScripts = context.api.userScripts;
+  if (!userScripts) return;
+  const filter = ids ? { ids } : undefined;
+  if (context.mode === "promise") {
+    await userScripts.unregister(filter);
+    return;
+  }
+  await callbackVoid((resolve) => userScripts.unregister(filter, resolve));
+}
+
+export function hasDeclarativeNetRequestApi(): boolean {
+  return Boolean(getApiContext()?.api.declarativeNetRequest);
+}
+
+export async function declarativeNetRequestGetDynamicRules(): Promise<Array<{ id: number }>> {
+  const context = requireContext();
+  const dnr = context.api.declarativeNetRequest;
+  if (!dnr) return [];
+  if (context.mode === "promise") {
+    return (await dnr.getDynamicRules()) as Array<{ id: number }>;
+  }
+  return callbackResult((resolve) => dnr.getDynamicRules(undefined, resolve));
+}
+
+export async function declarativeNetRequestUpdateDynamicRules(update: {
+  removeRuleIds?: number[];
+  addRules?: Array<{
+    id: number;
+    priority: number;
+    action: { type: "block" | "allow" | "upgradeScheme" };
+    condition: { urlFilter: string; initiatorDomains: string[]; resourceTypes: string[] };
+  }>;
+}): Promise<void> {
+  const context = requireContext();
+  const dnr = context.api.declarativeNetRequest;
+  if (!dnr) throw new Error("Declarative Net Request API is unavailable");
+  if (context.mode === "promise") {
+    await dnr.updateDynamicRules(update);
+    return;
+  }
+  await callbackVoid((resolve) => dnr.updateDynamicRules(update, resolve));
 }
 
 function requireApi(): ExtensionApi {

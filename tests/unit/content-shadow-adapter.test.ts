@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { ContentFilterController } from "../../src/content/content-filters";
 import { detectSiteAdapters } from "../../src/content/site-adapters";
+import { BILIBILI_SITE_MODULE } from "../../src/modules/bilibili/site-module";
 
 describe("shadow-root content adapter", () => {
   it("discovers every open compatibility root without requiring a version attribute", () => {
@@ -14,7 +15,7 @@ describe("shadow-root content adapter", () => {
           : []
     } as unknown as Document;
 
-    const adapters = detectSiteAdapters(fakeDocument);
+    const adapters = detectSiteAdapters(BILIBILI_SITE_MODULE, fakeDocument);
     const shadowAdapter = adapters[1];
 
     expect(shadowAdapter?.roots(fakeDocument)).toEqual([firstRoot, secondRoot]);
@@ -24,7 +25,7 @@ describe("shadow-root content adapter", () => {
     );
   });
 
-  it("listens for the compatibility mount event on window instead of document", () => {
+  it("declares the compatibility mount event on window instead of document", () => {
     const documentEvents: string[] = [];
     const windowEvents: string[] = [];
     const fakeWindow = {
@@ -39,7 +40,11 @@ describe("shadow-root content adapter", () => {
 
     new ContentFilterController(fakeDocument);
 
-    expect(windowEvents).toContain("bewlyMounted");
+    expect(BILIBILI_SITE_MODULE.descriptor.lifecycle).toContainEqual({
+      target: "window",
+      event: "bewlyMounted"
+    });
+    expect(windowEvents).not.toContain("bewlyMounted");
     expect(documentEvents).not.toContain("bewlyMounted");
     expect(documentEvents).toContain("keydown");
   });

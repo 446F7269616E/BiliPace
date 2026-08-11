@@ -1,25 +1,20 @@
+import { parseLocalModuleFiles } from "../modules/local/importer";
+import type {
+  LocalModuleDefinition,
+  LocalModuleFile,
+  LocalModuleSnapshot
+} from "../modules/local/types";
+import { originsFromLocalModule } from "../modules/local/validation";
 import { sendRequest } from "../shared/messages";
-import type { DeepPartial, FocusSettings, ManagedSite, SiteModuleStore } from "../shared/types";
+import type { DeepPartial, FocusSettings } from "../shared/types";
 import { assertAppRoot, describeError, element, setButtonBusy, toast } from "../styles/dom";
 import { createPageNavigation } from "../ui/page-navigation";
-import {
-  addBilibiliModuleSites,
-  addManagedSite,
-  getSiteModules,
-  hasWebsitePermission,
-  normalizeWebsiteInput,
-  removeSiteModule,
-  removeManagedSite,
-  requestBilibiliModulePermissions,
-  requestWebsitePermission,
-  setSiteModuleState,
-  updateManagedSite
-} from "../ui/site-management";
+import { addManagedSite, requestLocalModulePermissions } from "../ui/site-management";
 
+const MODULE_CATALOG_URL = "https://github.com/446F7269616E/Hourleaf/tree/main/optional-modules";
 const app = assertAppRoot();
 let settings: FocusSettings | null = null;
-let modules: SiteModuleStore | null = null;
-const BILIBILI_MODULE_ID = "hourleaf.site.bilibili";
+let localModules: LocalModuleSnapshot | null = null;
 
 document.body.classList.add("home-page");
 void loadSettings();
@@ -27,9 +22,9 @@ void loadSettings();
 async function loadSettings(): Promise<void> {
   renderLoading();
   try {
-    [settings, modules] = await Promise.all([
+    [settings, localModules] = await Promise.all([
       sendRequest({ type: "GET_SETTINGS" }),
-      getSiteModules()
+      sendRequest({ type: "GET_LOCAL_MODULES" })
     ]);
     renderSettings();
   } catch (error) {
@@ -68,29 +63,328 @@ function renderError(message: string): void {
 }
 
 function renderSettings(): void {
-  if (!settings) return;
+  if (!settings || !localModules) return;
+  const content = element("div", {
+    className: "home-content",
+    children: [
+      element("header", {
+        className: "home-heading",
+        children: [
+          element("h1", { className: "page-title", text: "设置" }),
+          element("p", { text: "管理本地模块与插件级选项。网站时间规则请前往配置页。" })
+        ]
+      }),
+      element("div", {
+        className: "home-settings",
+        children: [createModuleSettingsPanel(), createPluginSettingsPanel()]
+      })
+    ]
+  });
+  app.replaceChildren(createShell(content));
+}
 
-  const focusToggle = createToggle("专注保护", settings.enabled, "settings-focus-toggle");
+function createModuleSettingsPanel(): HTMLElement {
+  if (!localModules) return element("section");
+  const importButton = element("button", {
+    className: "btn btn--primary",
+    text: "导入本地模块",
+    attrs: { type: "button", "data-testid": "module-import-open" }
+  });
+  importButton.addEventListener("click", openImportDialog);
+  const installations = Object.values(localModules.store.installations).sort((left, right) =>
+    left.definition.name.localeCompare(right.definition.name, "zh-CN")
+  );
+  const warningItems = localModules.runtime.warnings.map((warning) =>
+    element("li", { text: warning })
+  );
+
+  return element("section", {
+    className: "home-settings__panel",
+    attrs: { "aria-labelledby": "module-settings-title" },
+    children: [
+      element("header", {
+        className: "home-settings__panel-heading home-settings__panel-heading--actions",
+        children: [
+          element("div", {
+            children: [
+              element("h2", { text: "模块设置", attrs: { id: "module-settings-title" } }),
+              element("p", {
+                text: "模块只从你明确选择的本地文件导入，不会从 GitHub 或其他地址自动下载代码。"
+              })
+            ]
+          }),
+          importButton
+        ]
+      }),
+      createModuleBoundaryNotice(),
+      ...(warningItems.length > 0
+        ? [
+            element("ul", {
+              className: "home-module-warnings",
+              attrs: { role: "status" },
+              children: warningItems
+            })
+          ]
+        : []),
+      installations.length > 0
+        ? element("div", {
+            className: "home-module-list",
+            children: installations.map(createLocalModuleCard)
+          })
+        : element("section", {
+            className: "card home-module-empty",
+            children: [
+              element("h3", { text: "还没有本地模块" }),
+              element("p", {
+                text: "可以从模块目录下载 .json、.css 或 .user.js 文件，再由你手动检查并导入。"
+              })
+            ]
+          })
+    ]
+  });
+}
+
+function createModuleBoundaryNotice(): HTMLElement {
+  const catalogLink = element("a", {
+    className: "btn",
+    text: "打开 GitHub 模块目录",
+    attrs: { href: MODULE_CATALOG_URL, target: "_blank", rel: "noopener noreferrer" }
+  });
+  return element("aside", {
+    className: "card home-module-boundary",
+    attrs: { "aria-label": "本地模块安全边界" },
+    children: [
+      element("div", {
+        children: [
+          element("strong", { text: "商店核心与本地模块相互隔离" }),
+          element("p", {
+            text: "核心只执行经过校验的域名策略、元素隐藏、CSS 和声明式网络规则；用户脚本只能进入浏览器提供的隔离 User Scripts 环境。"
+          })
+        ]
+      }),
+      catalogLink
+    ]
+  });
+}
+
+function createLocalModuleCard(
+  installation: LocalModuleSnapshot["store"]["installations"][string]
+): HTMLElement {
+  const { definition, enabled } = installation;
+  const toggle = createToggle(`启用 ${definition.name}`, enabled, `local-module-${definition.id}`);
+  toggle.input.addEventListener("change", () => {
+    void setLocalModuleEnabled(definition.id, toggle.input.checked, toggle.input);
+  });
+  const remove = element("button", {
+    className: "btn btn--danger",
+    text: "删除",
+    attrs: { type: "button" }
+  });
+  remove.addEventListener("click", () => {
+    openConfirmation({
+      title: `删除“${definition.name}”？`,
+      detail: "该模块的 CSS、网络规则和用户脚本注册都会从本机移除。网站时间配置不会删除。",
+      actionLabel: "删除",
+      onConfirm: async () => {
+        localModules = await sendRequest({ type: "REMOVE_LOCAL_MODULE", moduleId: definition.id });
+        toast("本地模块已删除");
+        renderSettings();
+      }
+    });
+  });
+  return element("article", {
+    className: "home-module card",
+    attrs: { "aria-labelledby": `module-title-${definition.id}` },
+    children: [
+      element("header", {
+        className: "home-module__header",
+        children: [
+          element("span", { className: "home-module__icon", text: "M" }),
+          element("div", {
+            className: "home-module__copy",
+            children: [
+              element("h3", {
+                text: definition.name,
+                attrs: { id: `module-title-${definition.id}` }
+              }),
+              element("p", {
+                text: definition.description || `${definition.id} · ${definition.version}`
+              })
+            ]
+          }),
+          element("span", {
+            className: `status-chip${enabled ? " status-chip--success" : ""}`,
+            text: enabled ? "已启用" : "已停用"
+          }),
+          element("div", { className: "home-module__actions", children: [toggle.label, remove] })
+        ]
+      }),
+      element("div", {
+        className: "home-module__details",
+        children: [
+          createModuleDetail("适用网站", definition.matches.join("、")),
+          createModuleDetail(
+            "能力",
+            definition.capabilities.length > 0 ? definition.capabilities.join("、") : "仅元数据"
+          ),
+          createModuleDetail("来源", "用户手动选择的本地文件")
+        ]
+      })
+    ]
+  });
+}
+
+function createModuleDetail(label: string, value: string): HTMLElement {
+  return element("p", {
+    children: [element("strong", { text: `${label}：` }), document.createTextNode(value)]
+  });
+}
+
+function openImportDialog(): void {
+  let candidate: LocalModuleDefinition | null = null;
+  const fileInput = element("input", {
+    className: "input",
+    attrs: {
+      type: "file",
+      multiple: true,
+      accept: ".json,.css,.js,.user.js,application/json,text/css,text/javascript",
+      "data-testid": "module-import-files"
+    }
+  });
+  const preview = element("div", {
+    className: "home-import-preview",
+    attrs: { role: "status", "aria-live": "polite" },
+    text: "请选择模块清单及其引用的 CSS/脚本文件。"
+  });
+  const confirm = element("button", {
+    className: "btn btn--primary",
+    text: "确认导入并授权",
+    attrs: { type: "button", "data-testid": "module-import-confirm" }
+  });
+  confirm.disabled = true;
+  const cancel = element("button", { className: "btn", text: "取消", attrs: { type: "button" } });
+  const dialog = element("dialog", {
+    className: "dialog home-import-dialog",
+    attrs: { "aria-labelledby": "module-import-title" },
+    children: [
+      element("h2", { text: "导入本地模块", attrs: { id: "module-import-title" } }),
+      element("p", {
+        text: "导入前请自行查看文件内容。Hourleaf 不会联网补齐清单引用，也不会使用 eval 执行脚本。"
+      }),
+      element("label", {
+        className: "field",
+        children: [element("span", { text: "本地模块文件" }), fileInput]
+      }),
+      preview,
+      element("div", { className: "dialog__actions", children: [cancel, confirm] })
+    ]
+  });
+  fileInput.addEventListener("change", () => {
+    void (async () => {
+      candidate = null;
+      confirm.disabled = true;
+      try {
+        const files = await Promise.all(
+          [...(fileInput.files ?? [])].map(async (file): Promise<LocalModuleFile> => ({
+            name: file.name,
+            text: await file.text()
+          }))
+        );
+        candidate = parseLocalModuleFiles(files);
+        preview.replaceChildren(
+          element("strong", { text: `${candidate.name} ${candidate.version}` }),
+          element("p", { text: `网站：${candidate.matches.join("、")}` }),
+          element("p", {
+            text: `能力：${candidate.capabilities.join("、") || "仅元数据"}`
+          })
+        );
+        confirm.disabled = false;
+      } catch (error) {
+        preview.textContent = describeError(error);
+      }
+    })();
+  });
+  cancel.addEventListener("click", () => dialog.close());
+  confirm.addEventListener("click", () => {
+    if (!candidate) return;
+    void importLocalModule(candidate, confirm, dialog);
+  });
+  dialog.addEventListener("close", () => dialog.remove());
+  document.body.append(dialog);
+  dialog.showModal();
+}
+
+async function importLocalModule(
+  definition: LocalModuleDefinition,
+  button: HTMLButtonElement,
+  dialog: HTMLDialogElement
+): Promise<void> {
+  setButtonBusy(button, true);
+  try {
+    if (
+      definition.userScript.trim() &&
+      localModules?.runtime.userScripts === "disabled-by-platform"
+    ) {
+      throw new Error("Safari 商店版不导入或执行用户脚本；请移除 .user.js 后再导入");
+    }
+    const granted = await requestLocalModulePermissions(
+      definition.matches,
+      definition.userScript.trim().length > 0
+    );
+    if (!granted) throw new Error("未获得模块所需的网站权限");
+    for (const origin of originsFromLocalModule(definition)) await addManagedSite(origin);
+    localModules = await sendRequest({ type: "IMPORT_LOCAL_MODULE", module: definition });
+    localModules = await sendRequest({
+      type: "SET_LOCAL_MODULE_ENABLED",
+      moduleId: definition.id,
+      enabled: true
+    });
+    dialog.close();
+    toast(localModules.runtime.warnings[0] ?? "本地模块已导入并启用");
+    renderSettings();
+  } catch (error) {
+    toast(describeError(error), "error");
+  } finally {
+    setButtonBusy(button, false);
+  }
+}
+
+async function setLocalModuleEnabled(
+  moduleId: string,
+  enabled: boolean,
+  control: HTMLInputElement
+): Promise<void> {
+  control.disabled = true;
+  try {
+    localModules = await sendRequest({ type: "SET_LOCAL_MODULE_ENABLED", moduleId, enabled });
+    toast(localModules.runtime.warnings[0] ?? (enabled ? "模块已启用" : "模块已停用"));
+    renderSettings();
+  } catch (error) {
+    toast(describeError(error), "error");
+    await loadSettings();
+  }
+}
+
+function createPluginSettingsPanel(): HTMLElement {
+  if (!settings) return element("section");
+  const focusToggle = createToggle("启用时间管理", settings.enabled, "settings-focus-toggle");
   focusToggle.input.addEventListener("change", () => {
     void updateSettings({ enabled: focusToggle.input.checked }, focusToggle.input);
   });
-
-  const planToggle = createToggle("计划模式", settings.planMode.enabled, "settings-plan-toggle");
-  const watchDuration = createNumberInput(
-    settings.planMode.watchDurationMinutes,
-    1,
-    360,
-    "单次访问分钟数"
-  );
-  watchDuration.disabled = !settings.planMode.enabled;
-  planToggle.input.addEventListener("change", () => {
-    void updatePlanMode({ enabled: planToggle.input.checked }, planToggle.input);
+  const watchDuration = element("input", {
+    className: "input",
+    attrs: {
+      type: "number",
+      min: "1",
+      max: "360",
+      step: "1",
+      value: settings.planMode.watchDurationMinutes,
+      "aria-label": "计划单次访问分钟数"
+    }
   });
   watchDuration.addEventListener("change", () => {
-    const value = clampInput(watchDuration, 1, 360);
-    void updatePlanMode({ watchDurationMinutes: value }, watchDuration);
+    void updatePlanDuration(clampNumberInput(watchDuration, 1, 360), watchDuration);
   });
-
   const clearUsage = element("button", {
     className: "btn btn--danger",
     text: "清空使用时间",
@@ -99,6 +393,7 @@ function renderSettings(): void {
   clearUsage.addEventListener("click", () => {
     openConfirmation({
       title: "清空使用时间？",
+      detail: "已记录的本地使用时间会被删除。",
       actionLabel: "清空",
       onConfirm: async () => {
         await sendRequest({ type: "CLEAR_USAGE" });
@@ -106,7 +401,6 @@ function renderSettings(): void {
       }
     });
   });
-
   const resetSettings = element("button", {
     className: "btn",
     text: "恢复默认设置",
@@ -115,6 +409,7 @@ function renderSettings(): void {
   resetSettings.addEventListener("click", () => {
     openConfirmation({
       title: "恢复默认设置？",
+      detail: "时间设置将恢复默认值；本地模块仍会保留。",
       actionLabel: "恢复",
       onConfirm: async () => {
         settings = await sendRequest({ type: "RESET_SETTINGS" });
@@ -124,208 +419,30 @@ function renderSettings(): void {
     });
   });
 
-  const content = element("div", {
-    className: "home-content",
+  return element("section", {
+    className: "home-settings__panel",
+    attrs: { "aria-labelledby": "plugin-settings-title" },
     children: [
-      element("header", {
-        className: "home-heading",
-        children: [element("h1", { className: "page-title", text: "设置" })]
-      }),
+      createPanelHeading(
+        "plugin-settings-title",
+        "插件其他设置",
+        "这里的总开关影响所有时间规则，因此只在完整设置页提供。"
+      ),
       element("div", {
-        className: "home-settings",
+        className: "home-plugin-card card",
         children: [
-          createWebsitesCard(),
-          createModulesCard(),
-          createSettingsCard("专注", [createSettingRow("专注保护", focusToggle.label)]),
-          createSettingsCard("计划", [
-            createSettingRow("计划模式", planToggle.label),
-            createNumberRow("单次访问", watchDuration, "分钟")
-          ]),
-          createSettingsCard("数据", [
-            element("div", {
-              className: "home-settings__actions",
-              children: [resetSettings, clearUsage]
+          createSettingRow("启用时间管理", "关闭后暂停所有计时、名单与时间规则", focusToggle.label),
+          createSettingRow(
+            "计划单次访问",
+            "开始一个计划项目后允许访问的时长",
+            element("label", {
+              className: "home-number-control",
+              children: [watchDuration, element("span", { text: "分钟" })]
             })
-          ])
-        ]
-      })
-    ]
-  });
-
-  app.replaceChildren(createShell(content));
-  void refreshPermissionBadges();
-}
-
-function createWebsitesCard(): HTMLElement {
-  const sites = settings
-    ? Object.values(settings.sites).sort((left, right) => left.label.localeCompare(right.label))
-    : [];
-  const input = element("input", {
-    className: "input home-site-add__input",
-    attrs: {
-      type: "text",
-      inputmode: "url",
-      autocomplete: "url",
-      placeholder: "example.com",
-      "aria-label": "网站域名或网址",
-      "data-testid": "site-add-input"
-    }
-  });
-  const addButton = element("button", {
-    className: "btn btn--primary",
-    text: "添加网站",
-    attrs: { type: "button", "data-testid": "site-add-button" }
-  });
-  addButton.addEventListener("click", () => {
-    void addSiteFromInput(input, addButton);
-  });
-  input.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      addButton.click();
-    }
-  });
-  return element("section", {
-    className: "home-settings__card card home-sites",
-    attrs: { "aria-labelledby": "managed-sites-title" },
-    children: [
-      element("div", {
-        className: "home-settings__card-heading",
-        children: [
-          element("h2", { text: "网站", attrs: { id: "managed-sites-title" } }),
-          element("span", { className: "status-chip", text: `${sites.length} 个` })
-        ]
-      }),
-      element("div", {
-        className: "home-site-add",
-        children: [input, addButton]
-      }),
-      element("div", {
-        className: "home-site-list",
-        children:
-          sites.length > 0
-            ? sites.map(createSiteRow)
-            : [element("p", { className: "home-empty", text: "暂无网站" })]
-      })
-    ]
-  });
-}
-
-function createSiteRow(site: ManagedSite): HTMLElement {
-  const toggle = createToggle(
-    `${site.label || site.hostname}网站`,
-    site.enabled,
-    `site-${site.id}`
-  );
-  toggle.input.addEventListener("change", () => {
-    void setSiteEnabled(site, toggle.input.checked, toggle.input);
-  });
-  const remove = element("button", {
-    className: "btn btn--danger",
-    attrs: { type: "button", title: "删除", "aria-label": `删除${site.label || site.hostname}` },
-    children: [element("span", { text: "删除" })]
-  });
-  remove.addEventListener("click", () => {
-    openConfirmation({
-      title: `删除 ${site.label || site.hostname}？`,
-      actionLabel: "删除",
-      onConfirm: async () => {
-        await removeManagedSite(site.id);
-        toast("网站已删除");
-        await loadSettings();
-      }
-    });
-  });
-  return element("article", {
-    className: "home-site-row",
-    dataset: { siteId: site.id },
-    children: [
-      element("div", {
-        className: "home-site-row__identity",
-        children: [
-          element("strong", { text: site.label || site.hostname }),
-          element("span", { text: site.origin })
-        ]
-      }),
-      element("span", {
-        className: "status-chip home-site-row__permission",
-        text: "检查权限",
-        dataset: { permissionOrigin: `${site.origin}/*` }
-      }),
-      toggle.label,
-      remove
-    ]
-  });
-}
-
-function createModulesCard(): HTMLElement {
-  const installation = modules?.installations[BILIBILI_MODULE_ID];
-  const installed = Boolean(installation);
-  const enabled = Boolean(installation?.enabled);
-  const action = !installed ? "restore" : enabled ? "disable" : "enable";
-  const button = element("button", {
-    className: `btn${action === "restore" || action === "enable" ? " btn--primary" : ""}`,
-    text: action === "restore" ? "恢复" : action === "enable" ? "启用" : "停用",
-    attrs: { type: "button", "data-testid": "bilibili-module-action" }
-  });
-  button.addEventListener("click", () => {
-    void updateModule(action, button);
-  });
-  const removeButton = element("button", {
-    className: "btn btn--danger",
-    text: "删除",
-    attrs: { type: "button", "data-testid": "bilibili-module-remove" }
-  });
-  removeButton.disabled = !installed;
-  removeButton.addEventListener("click", () => {
-    openConfirmation({
-      title: "删除哔哩哔哩模块？",
-      actionLabel: "删除",
-      onConfirm: async () => {
-        await removeSiteModule(BILIBILI_MODULE_ID);
-        toast("模块已删除");
-        await loadSettings();
-      }
-    });
-  });
-  return element("section", {
-    className: "home-settings__card card home-modules",
-    attrs: { "aria-labelledby": "modules-title" },
-    children: [
-      element("div", {
-        className: "home-settings__card-heading",
-        children: [
-          element("h2", { text: "模块", attrs: { id: "modules-title" } }),
-          element("span", { className: "status-chip", text: installed ? "已预装" : "已删除" })
-        ]
-      }),
-      element("article", {
-        className: "home-module-row",
-        children: [
+          ),
           element("div", {
-            className: "home-module-row__icon",
-            children: [element("span", { text: "哔" })]
-          }),
-          element("div", {
-            className: "home-module-row__copy",
-            children: [
-              element("strong", { text: "哔哩哔哩" }),
-              element("p", { text: "视频、动态、直播与站内内容管理" }),
-              element("div", {
-                className: "home-module-row__capabilities",
-                children: ["分类", "内容过滤", "计划", "使用统计"].map((label) =>
-                  element("span", { text: label })
-                )
-              })
-            ]
-          }),
-          element("span", {
-            className: `status-chip${enabled ? " status-chip--success" : ""}`,
-            text: enabled ? "已启用" : installed ? "已停用" : "已删除"
-          }),
-          element("div", {
-            className: "home-module-row__actions",
-            children: [button, removeButton]
+            className: "home-settings__actions",
+            children: [resetSettings, clearUsage]
           })
         ]
       })
@@ -333,141 +450,22 @@ function createModulesCard(): HTMLElement {
   });
 }
 
-async function addSiteFromInput(input: HTMLInputElement, button: HTMLButtonElement): Promise<void> {
-  try {
-    const website = normalizeWebsiteInput(input.value);
-    setButtonBusy(button, true, "请求权限");
-    const granted = await requestWebsitePermission(website.permissionPattern);
-    if (!granted) {
-      toast("未获得网站权限", "error");
-      return;
-    }
-    setButtonBusy(button, true, "正在添加");
-    await addManagedSite(website.origin);
-    input.value = "";
-    toast("网站已添加");
-    await loadSettings();
-  } catch (error) {
-    toast(error instanceof Error ? error.message : describeError(error), "error");
-  } finally {
-    setButtonBusy(button, false);
-  }
+function createPanelHeading(id: string, title: string, description: string): HTMLElement {
+  return element("header", {
+    className: "home-settings__panel-heading",
+    children: [element("h2", { text: title, attrs: { id } }), element("p", { text: description })]
+  });
 }
 
-async function setSiteEnabled(
-  site: ManagedSite,
-  enabled: boolean,
-  control: HTMLInputElement
-): Promise<void> {
-  control.disabled = true;
-  try {
-    await updateManagedSite(site.id, enabled);
-    toast(enabled ? "网站已启用" : "网站已暂停");
-    await loadSettings();
-  } catch (error) {
-    control.checked = !enabled;
-    control.disabled = false;
-    toast(describeError(error), "error");
-  }
-}
-
-async function updateModule(
-  action: "restore" | "enable" | "disable",
-  button: HTMLButtonElement
-): Promise<void> {
-  setButtonBusy(button, true);
-  try {
-    if (action === "enable") {
-      const granted = await requestBilibiliModulePermissions();
-      if (!granted) {
-        toast("未获得网站权限", "error");
-        return;
-      }
-      await addBilibiliModuleSites();
-    }
-    await setSiteModuleState(BILIBILI_MODULE_ID, action);
-    toast(action === "restore" ? "模块已恢复" : action === "enable" ? "模块已启用" : "模块已停用");
-    await loadSettings();
-  } catch (error) {
-    setButtonBusy(button, false);
-    toast(describeError(error), "error");
-  }
-}
-
-async function refreshPermissionBadges(): Promise<void> {
-  const badges = document.querySelectorAll<HTMLElement>("[data-permission-origin]");
-  await Promise.all(
-    [...badges].map(async (badge) => {
-      const pattern = badge.dataset.permissionOrigin;
-      if (!pattern) return;
-      const granted = await hasWebsitePermission(pattern);
-      badge.textContent = granted === null ? "权限由浏览器管理" : granted ? "已授权" : "未授权";
-      badge.classList.toggle("status-chip--success", granted === true);
-      badge.classList.toggle("status-chip--warning", granted === false);
-    })
-  );
-}
-
-function createShell(content: HTMLElement): HTMLElement {
+function createSettingRow(title: string, description: string, control: HTMLElement): HTMLElement {
   return element("div", {
-    className: "home-shell app-shell",
-    children: [createPageNavigation({ currentPage: "home" }), content]
-  });
-}
-
-function createSettingsCard(title: string, children: HTMLElement[]): HTMLElement {
-  return element("section", {
-    className: "home-settings__card card",
-    children: [element("h2", { text: title }), ...children]
-  });
-}
-
-function createSettingRow(label: string, control: HTMLElement): HTMLElement {
-  return element("div", {
-    className: "home-settings__row",
-    children: [element("span", { text: label }), control]
-  });
-}
-
-function createNumberRow(label: string, input: HTMLInputElement, suffix: string): HTMLElement {
-  return createSettingRow(
-    label,
-    element("label", {
-      className: "home-settings__number",
-      children: [input, element("span", { text: suffix })]
-    })
-  );
-}
-
-function createToggle(
-  labelText: string,
-  checked: boolean,
-  testId: string
-): { label: HTMLLabelElement; input: HTMLInputElement } {
-  const input = element("input", {
-    attrs: {
-      type: "checkbox",
-      checked,
-      "aria-label": labelText,
-      "data-testid": testId
-    }
-  });
-  const label = element("label", {
-    className: "switch",
-    children: [input, element("span", { className: "sr-only", text: labelText })]
-  });
-  return { label, input };
-}
-
-function createNumberInput(
-  value: number,
-  min: number,
-  max: number,
-  label: string
-): HTMLInputElement {
-  return element("input", {
-    className: "input",
-    attrs: { type: "number", value, min, max, step: "1", "aria-label": label }
+    className: "home-setting-row",
+    children: [
+      element("div", {
+        children: [element("strong", { text: title }), element("p", { text: description })]
+      }),
+      control
+    ]
   });
 }
 
@@ -481,31 +479,52 @@ async function updateSettings(
     toast("已保存");
     renderSettings();
   } catch (error) {
-    control.disabled = false;
     toast(describeError(error), "error");
     await loadSettings();
   }
 }
 
-async function updatePlanMode(
-  patch: { enabled?: boolean; watchDurationMinutes?: number },
+async function updatePlanDuration(
+  watchDurationMinutes: number,
   control: HTMLInputElement
 ): Promise<void> {
   control.disabled = true;
   try {
-    const state = await sendRequest({ type: "SET_PLAN_MODE", ...patch });
+    const state = await sendRequest({ type: "SET_PLAN_MODE", watchDurationMinutes });
     if (settings) settings = { ...settings, planMode: state.settings };
     toast("已保存");
     renderSettings();
   } catch (error) {
-    control.disabled = false;
     toast(describeError(error), "error");
     await loadSettings();
   }
 }
 
+function createShell(content: HTMLElement): HTMLElement {
+  return element("div", {
+    className: "home-shell app-shell",
+    children: [createPageNavigation({ currentPage: "home" }), content]
+  });
+}
+
+function createToggle(
+  labelText: string,
+  checked: boolean,
+  testId: string
+): { label: HTMLLabelElement; input: HTMLInputElement } {
+  const input = element("input", {
+    attrs: { type: "checkbox", checked, "aria-label": labelText, "data-testid": testId }
+  });
+  const label = element("label", {
+    className: "switch",
+    children: [input, element("span", { className: "sr-only", text: labelText })]
+  });
+  return { label, input };
+}
+
 interface ConfirmationOptions {
   title: string;
+  detail: string;
   actionLabel: string;
   onConfirm(): Promise<void>;
 }
@@ -513,20 +532,18 @@ interface ConfirmationOptions {
 function openConfirmation(options: ConfirmationOptions): void {
   const dialog = element("dialog", {
     className: "dialog home-confirmation",
+    attrs: { "aria-labelledby": "home-confirmation-title" },
     children: [
-      element("h2", { text: options.title }),
+      element("h2", { text: options.title, attrs: { id: "home-confirmation-title" } }),
+      element("p", { text: options.detail }),
       element("div", {
         className: "dialog__actions",
         children: [
-          element("button", {
-            className: "btn",
-            text: "取消",
-            attrs: { type: "button", value: "cancel" }
-          }),
+          element("button", { className: "btn", text: "取消", attrs: { type: "button" } }),
           element("button", {
             className: "btn btn--danger",
             text: options.actionLabel,
-            attrs: { type: "button", value: "confirm" }
+            attrs: { type: "button" }
           })
         ]
       })
@@ -553,9 +570,9 @@ function openConfirmation(options: ConfirmationOptions): void {
   dialog.showModal();
 }
 
-function clampInput(input: HTMLInputElement, min: number, max: number): number {
-  const value = Math.round(Number(input.value));
-  const normalized = Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : min;
-  input.value = String(normalized);
-  return normalized;
+function clampNumberInput(input: HTMLInputElement, min: number, max: number): number {
+  const parsed = Math.round(Number(input.value));
+  const value = Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : min;
+  input.value = String(value);
+  return value;
 }
