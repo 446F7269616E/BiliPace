@@ -1,14 +1,53 @@
 import { sendRequest } from "../shared/messages";
-import { MAX_PLAN_IMPORT_ITEMS, MAX_PLAN_TITLE_LENGTH } from "../shared/plan";
-import type { PlanItem, PlanItemInput, PlanItemSource, PlanState } from "../shared/types";
+import { permissionsRequest } from "../shared/browser";
+import {
+  configureLocale,
+  getResolvedLocale,
+  localizeDocumentTitle,
+  t,
+  type MessageKey
+} from "../shared/i18n";
+import {
+  MAX_PLAN_DURATION_MINUTES,
+  MAX_PLAN_IMPORT_ITEMS,
+  MAX_PLAN_TITLE_LENGTH,
+  MIN_PLAN_DURATION_MINUTES
+} from "../shared/plan";
+import type {
+  PlanCompletionMode,
+  PlanItem,
+  PlanItemInput,
+  PlanItemSource,
+  PlanState
+} from "../shared/types";
 import { assertAppRoot, describeError, element, icon, setButtonBusy, toast } from "../styles/dom";
 import { createPageNavigation } from "../ui/page-navigation";
+import {
+  fitMindmapTransform,
+  getMindmapConnectorMetrics,
+  MAX_MINDMAP_SCALE,
+  MIN_MINDMAP_SCALE,
+  type MindmapTransform,
+  zoomMindmapAt
+} from "./mindmap-viewport";
 
-const SOURCE_LABELS: Readonly<Record<PlanItemSource, string>> = {
-  manual: "手动添加",
-  "watch-later": "稍后再看",
-  favorite: "收藏夹"
+const SOURCE_LABEL_KEYS: Readonly<Record<PlanItemSource, MessageKey>> = {
+  manual: "plan.source.manual",
+  "watch-later": "plan.source.watchLater",
+  favorite: "plan.source.favorite"
 };
+
+const COMPLETION_MODE_LABEL_KEYS: Readonly<Record<PlanCompletionMode, MessageKey>> = {
+  lenient: "options.mode.lenient",
+  flow: "options.mode.flow",
+  strict: "options.mode.strict"
+} as const;
+
+const COMPLETION_MODE_DESCRIPTION_KEYS: Readonly<Record<PlanCompletionMode, MessageKey>> = {
+  lenient: "options.mode.lenientDescription",
+  flow: "options.mode.flowDescription",
+  strict: "options.mode.strictDescription"
+} as const;
 
 const PLAN_VIEW_STORAGE_KEY = "hourleaf.plan.view";
 type PlanView = "list" | "mindmap";
@@ -17,14 +56,25 @@ const app = assertAppRoot();
 let state: PlanState | null = null;
 let editingItemId: string | null = null;
 let planView: PlanView = readPlanView();
+let completedExpanded = false;
+let mindmapTransform: MindmapTransform | null = null;
+let mindmapContentSignature: string | null = null;
+let cleanupMindmap: (() => void) | null = null;
 
 document.body.classList.add("plan-page");
+configureLocale("system");
 void loadPlan();
 
 async function loadPlan(): Promise<void> {
   renderLoading();
   try {
-    state = await sendRequest({ type: "GET_PLAN_STATE" });
+    const [planState, settings] = await Promise.all([
+      sendRequest({ type: "GET_PLAN_STATE" }),
+      sendRequest({ type: "GET_SETTINGS" })
+    ]);
+    configureLocale(settings.locale);
+    localizeDocumentTitle("plan");
+    state = planState;
     renderPlan();
   } catch (error) {
     renderError(describeError(error));
@@ -36,13 +86,13 @@ function renderLoading(): void {
     createShell(
       element("section", {
         className: "card plan-card plan-state",
-        attrs: { "aria-busy": "true", "aria-label": "正在加载计划" },
+        attrs: { "aria-busy": "true", "aria-label": t("plan.loading") },
         children: [
           element("div", {
             className: "plan-state__inner",
             children: [
               element("div", { className: "plan-state__icon", children: [icon("calendar")] }),
-              element("h2", { text: "正在加载计划" }),
+              element("h2", { text: t("plan.loading") }),
               element("div", {
                 className: "plan-skeleton",
                 attrs: { "aria-hidden": "true" },
@@ -62,7 +112,7 @@ function renderLoading(): void {
 function renderError(message: string): void {
   const retry = element("button", {
     className: "btn btn--primary",
-    text: "重新加载",
+    text: t("common.retry"),
     attrs: { type: "button" }
   });
   retry.addEventListener("click", () => void loadPlan());
@@ -76,7 +126,7 @@ function renderError(message: string): void {
             className: "plan-state__inner",
             children: [
               element("div", { className: "plan-state__icon", children: [icon("warning")] }),
-              element("h2", { text: "计划加载失败" }),
+              element("h2", { text: t("plan.loadFailed") }),
               element("p", { text: message }),
               retry
             ]
@@ -89,26 +139,30 @@ function renderError(message: string): void {
 
 function renderPlan(options: { focusItemId?: string } = {}): void {
   if (!state) return;
+  cleanupMindmap?.();
+  cleanupMindmap = null;
   const content = createQueueCard(state);
   app.replaceChildren(createShell(content));
 
   if (options.focusItemId) {
-    document
-      .querySelector<HTMLElement>(`[data-plan-item-id="${cssEscape(options.focusItemId)}"]`)
-      ?.focus();
+    const item = document.querySelector<HTMLElement>(
+      `[data-plan-item-id="${cssEscape(options.focusItemId)}"]`
+    );
+    const collapsedSection = item?.closest<HTMLDetailsElement>("details:not([open])");
+    (collapsedSection?.querySelector<HTMLElement>("summary") ?? item)?.focus();
   }
 }
 
 function createShell(content: HTMLElement): HTMLElement {
   return element("div", {
-    className: "plan-shell app-shell",
+    className: `plan-shell app-shell${planView === "mindmap" ? " plan-shell--mindmap" : ""}`,
     children: [
       createPageNavigation({ currentPage: "plan" }),
       element("header", {
         className: "plan-heading",
         children: [
           element("div", {
-            children: [element("h1", { className: "page-title", text: "计划" })]
+            children: [element("h1", { className: "page-title", text: t("plan.title") })]
           }),
           createViewControl()
         ]
@@ -120,12 +174,12 @@ function createShell(content: HTMLElement): HTMLElement {
 
 function createViewControl(): HTMLElement {
   const views: ReadonlyArray<{ id: PlanView; label: string }> = [
-    { id: "list", label: "待办列表" },
-    { id: "mindmap", label: "思维导图" }
+    { id: "list", label: t("plan.list") },
+    { id: "mindmap", label: t("plan.mindmap") }
   ];
   return element("div", {
     className: "plan-view-control segmented",
-    attrs: { role: "group", "aria-label": "计划视图" },
+    attrs: { role: "group", "aria-label": t("plan.viewLabel") },
     children: views.map(({ id, label }) => {
       const button = element("button", {
         className: "segmented__item plan-view-control__button",
@@ -156,13 +210,13 @@ function createQueueCard(planState: PlanState): HTMLElement {
   const add = element("button", {
     className: "btn btn--primary",
     attrs: { type: "button", "data-testid": "plan-add-open" },
-    children: [icon("plus"), "添加待办"]
+    children: [icon("plus"), t("plan.add")]
   });
   add.addEventListener("click", openAddDialog);
   const bulk = element("button", {
     className: "btn",
     attrs: { type: "button", "data-testid": "plan-bulk-import" },
-    children: [icon("plus"), "批量添加"]
+    children: [icon("plus"), t("plan.bulkAdd")]
   });
   bulk.addEventListener("click", openBulkImportDialog);
 
@@ -177,7 +231,7 @@ function createQueueCard(planState: PlanState): HTMLElement {
             className: "plan-workspace__title",
             children: [
               element("h2", {
-                text: planView === "list" ? "待办列表" : "思维导图",
+                text: planView === "list" ? t("plan.list") : t("plan.mindmap"),
                 attrs: { id: "plan-workspace-title" }
               }),
               createProgress(pending.length, completed.length, completion)
@@ -194,10 +248,10 @@ function createQueueCard(planState: PlanState): HTMLElement {
 function createListView(pending: PlanItem[], completed: PlanItem[]): HTMLElement {
   return element("div", {
     className: "plan-list-view",
-    attrs: { "aria-label": "纵向待办列表" },
+    attrs: { "aria-label": t("plan.list") },
     children: [
-      createItemSection("待办", pending, false, "list"),
-      createItemSection("已完成", completed, true, "list")
+      createItemSection(t("plan.pending"), pending, false, "list"),
+      createItemSection(t("plan.completed"), completed, true, "list")
     ]
   });
 }
@@ -208,11 +262,11 @@ function createProgress(pending: number, completed: number, percentage: number):
     className: "plan-progress",
     attrs: {
       role: "progressbar",
-      "aria-label": "计划完成进度",
+      "aria-label": t("plan.progress"),
       "aria-valuemin": "0",
       "aria-valuemax": String(total),
       "aria-valuenow": String(completed),
-      "aria-valuetext": total > 0 ? `已完成 ${completed} 项，共 ${total} 项` : "还没有计划项"
+      "aria-valuetext": total > 0 ? t("plan.progressText", { completed, total }) : t("plan.noItems")
     },
     children: [
       element("div", {
@@ -221,7 +275,7 @@ function createProgress(pending: number, completed: number, percentage: number):
           element("span", { className: "plan-progress__value", text: `${completed}/${total}` }),
           element("span", {
             className: "plan-progress__label",
-            text: pending > 0 ? `待办 ${pending} 项` : "全部完成"
+            text: pending > 0 ? t("plan.pendingCount", { count: pending }) : t("plan.allCompleted")
           })
         ]
       }),
@@ -245,86 +299,345 @@ function createItemSection(
   completed: boolean,
   variant: PlanView
 ): HTMLElement {
-  return element("section", {
-    className: "plan-section",
-    attrs: { "aria-labelledby": `plan-${completed ? "completed" : "pending"}-title` },
+  const sectionId = `plan-${completed ? "completed" : "pending"}-title`;
+  const header = element(completed ? "summary" : "div", {
+    className: "plan-section__header",
+    attrs: completed ? { tabindex: "0" } : undefined,
     children: [
       element("div", {
-        className: "plan-section__header",
-        children: [
-          element("div", {
-            children: [
-              element("h2", {
-                text: title,
-                attrs: { id: `plan-${completed ? "completed" : "pending"}-title` }
-              })
-            ]
-          }),
-          element("span", {
-            className: `plan-status-pill ${completed ? "plan-status-pill--success" : "plan-status-pill--neutral"}`,
-            text: `${items.length} 项`
-          })
-        ]
+        children: [element("h2", { text: title, attrs: { id: sectionId } })]
       }),
-      items.length > 0
-        ? element("ol", {
-            className: "plan-list",
-            attrs: { "aria-label": completed ? "已完成内容" : "待办内容" },
-            children: items.map((item, index) => createPlanItem(item, index, items.length, variant))
-          })
-        : createEmpty(completed)
-    ]
-  });
-}
-
-function createMindmap(pending: PlanItem[], completed: PlanItem[]): HTMLElement {
-  return element("section", {
-    className: "plan-mindmap",
-    attrs: { "aria-label": "横向思维导图" },
-    children: [
-      element("div", {
-        className: "plan-mindmap__canvas",
-        children: [
-          element("div", { className: "plan-mindmap__root", text: "计划" }),
-          element("div", {
-            className: "plan-mindmap__branches",
-            children: [
-              createMindmapBranch("待办", pending, false),
-              createMindmapBranch("已完成", completed, true)
-            ]
-          })
-        ]
+      element("span", {
+        className: `plan-status-pill ${completed ? "plan-status-pill--success" : "plan-status-pill--neutral"}`,
+        text: t("common.itemCount", { count: items.length })
       })
     ]
   });
+  const itemContent =
+    items.length > 0
+      ? element("ol", {
+          className: "plan-list",
+          attrs: { "aria-label": completed ? t("plan.completed") : t("plan.pending") },
+          children: items.map((item, index) => createPlanItem(item, index, items.length, variant))
+        })
+      : createEmpty(completed);
+  const section = element(completed ? "details" : "section", {
+    className: `plan-section plan-section--${completed ? "completed" : "pending"}`,
+    attrs: { "aria-labelledby": `plan-${completed ? "completed" : "pending"}-title` },
+    children: [header, itemContent]
+  });
+  if (completed && section instanceof HTMLDetailsElement) {
+    section.open = completedExpanded;
+    section.addEventListener("toggle", () => {
+      completedExpanded = section.open;
+    });
+  }
+  return section;
+}
+
+function createMindmap(pending: PlanItem[], completed: PlanItem[]): HTMLElement {
+  const nextContentSignature = [...pending, ...completed]
+    .map((item) => `${item.id}\u0000${item.status}\u0000${item.title}\u0000${item.url}`)
+    .sort()
+    .join("\u0001");
+  if (mindmapContentSignature !== null && mindmapContentSignature !== nextContentSignature) {
+    mindmapTransform = null;
+  }
+  mindmapContentSignature = nextContentSignature;
+  const branches = element("div", {
+    className: "plan-mindmap__branches",
+    children: [
+      createMindmapBranch(t("plan.pending"), pending, false),
+      createMindmapBranch(t("plan.completed"), completed, true)
+    ]
+  });
+  const scene = element("div", {
+    className: "plan-mindmap__canvas",
+    children: [element("div", { className: "plan-mindmap__root", text: t("plan.title") }), branches]
+  });
+  const viewport = element("div", {
+    className: "plan-mindmap__viewport",
+    attrs: {
+      tabindex: "0",
+      "aria-label": t("plan.canvasLabel"),
+      "aria-describedby": "plan-mindmap-hint"
+    },
+    children: [scene]
+  });
+  const zoomValue = element("output", {
+    className: "plan-mindmap__zoom-value",
+    text: "100%"
+  });
+  const zoomOut = createMindmapControl("−", t("plan.zoomOut"));
+  const zoomIn = createMindmapControl("+", t("plan.zoomIn"));
+  const fit = createMindmapControl("⌖", t("plan.fitView"));
+  const toolbar = element("div", {
+    className: "plan-mindmap__toolbar",
+    attrs: { role: "group", "aria-label": t("plan.canvasControls") },
+    children: [zoomOut, zoomValue, zoomIn, fit]
+  });
+  const mindmap = element("section", {
+    className: "plan-mindmap",
+    attrs: { "aria-label": t("plan.mindmap") },
+    children: [
+      element("div", {
+        className: "plan-mindmap__topbar",
+        children: [
+          element("p", {
+            className: "plan-mindmap__hint",
+            text: t("plan.canvasHint"),
+            attrs: { id: "plan-mindmap-hint" }
+          }),
+          toolbar
+        ]
+      }),
+      viewport
+    ]
+  });
+  window.requestAnimationFrame(() => {
+    if (!viewport.isConnected) return;
+    cleanupMindmap = enableMindmapViewport(viewport, scene, branches, zoomValue, {
+      zoomIn,
+      zoomOut,
+      fit
+    });
+  });
+  return mindmap;
 }
 
 function createMindmapBranch(title: string, items: PlanItem[], completed: boolean): HTMLElement {
-  return element("section", {
-    className: `plan-mindmap__branch${completed ? " plan-mindmap__branch--complete" : ""}`,
-    attrs: { "aria-labelledby": `plan-mindmap-${completed ? "completed" : "pending"}-title` },
-    children: [
-      element("h2", {
-        className: "plan-mindmap__branch-title",
-        text: `${title} ${items.length}`,
-        attrs: { id: `plan-mindmap-${completed ? "completed" : "pending"}-title` }
-      }),
-      items.length > 0
-        ? element("ol", {
-            className: "plan-mindmap__track",
-            attrs: {
-              "aria-label": completed ? "已完成计划节点" : "可排序的待办计划节点"
-            },
-            children: items.map((item, index) =>
-              createPlanItem(item, index, items.length, "mindmap")
-            )
-          })
-        : element("div", {
-            className: "plan-mindmap__empty",
-            text: completed ? "暂无完成记录" : "暂无待办"
-          })
-    ]
+  const titleId = `plan-mindmap-${completed ? "completed" : "pending"}-title`;
+  const branchTitle = element(completed ? "summary" : "h2", {
+    className: "plan-mindmap__branch-title",
+    text: `${title} ${items.length}`,
+    attrs: { id: titleId }
   });
+  const branchContent =
+    items.length > 0
+      ? element("ol", {
+          className: "plan-mindmap__track",
+          attrs: { "aria-label": completed ? t("plan.completed") : t("plan.pending") },
+          children: items.map((item, index) => createPlanItem(item, index, items.length, "mindmap"))
+        })
+      : element("div", {
+          className: "plan-mindmap__empty",
+          text: completed ? t("plan.noCompleted") : t("plan.noPending")
+        });
+  const branch = element(completed ? "details" : "section", {
+    className: `plan-mindmap__branch${completed ? " plan-mindmap__branch--complete" : ""}`,
+    attrs: { "aria-labelledby": titleId },
+    children: [branchTitle, branchContent]
+  });
+  if (completed && branch instanceof HTMLDetailsElement) {
+    branch.open = completedExpanded;
+    branch.addEventListener("toggle", () => {
+      completedExpanded = branch.open;
+    });
+  }
+  return branch;
+}
+
+function createMindmapControl(text: string, label: string): HTMLButtonElement {
+  return element("button", {
+    className: "btn btn--icon plan-mindmap__control",
+    text,
+    attrs: { type: "button", title: label, "aria-label": label }
+  });
+}
+
+function enableMindmapViewport(
+  viewport: HTMLElement,
+  scene: HTMLElement,
+  branches: HTMLElement,
+  zoomValue: HTMLOutputElement,
+  controls: Readonly<{
+    zoomIn: HTMLButtonElement;
+    zoomOut: HTMLButtonElement;
+    fit: HTMLButtonElement;
+  }>
+): () => void {
+  const abort = new AbortController();
+  let transform = mindmapTransform;
+  let autoFit = transform === null;
+  let activePointerId: number | null = null;
+  let dragOrigin = { x: 0, y: 0 };
+  let transformOrigin = { x: 0, y: 0 };
+  let fitFrame = 0;
+
+  const syncBranchConnector = (): void => {
+    const branchElements = Array.from(branches.children).filter(
+      (child): child is HTMLElement => child instanceof HTMLElement
+    );
+    const first = branchElements.at(0);
+    const last = branchElements.at(-1);
+    if (!first || !last) return;
+    const connector = getMindmapConnectorMetrics(
+      { top: first.offsetTop, height: first.offsetHeight },
+      { top: last.offsetTop, height: last.offsetHeight }
+    );
+    branches.style.setProperty("--mindmap-connector-top", `${connector.top}px`);
+    branches.style.setProperty("--mindmap-connector-height", `${connector.height}px`);
+  };
+
+  const applyTransform = (next: MindmapTransform): void => {
+    transform = next;
+    mindmapTransform = next;
+    scene.style.transform = `translate3d(${next.x}px, ${next.y}px, 0) scale(${next.scale})`;
+    zoomValue.value = `${Math.round(next.scale * 100)}%`;
+    controls.zoomOut.disabled = next.scale <= MIN_MINDMAP_SCALE;
+    controls.zoomIn.disabled = next.scale >= MAX_MINDMAP_SCALE;
+  };
+
+  const fitView = (): void => {
+    window.cancelAnimationFrame(fitFrame);
+    fitFrame = window.requestAnimationFrame(() => {
+      if (!viewport.isConnected) return;
+      autoFit = true;
+      applyTransform(
+        fitMindmapTransform(
+          { width: viewport.clientWidth, height: viewport.clientHeight },
+          { width: scene.offsetWidth, height: scene.offsetHeight }
+        )
+      );
+    });
+  };
+
+  const zoomAround = (requestedScale: number, x: number, y: number): void => {
+    if (!transform) return;
+    autoFit = false;
+    applyTransform(zoomMindmapAt(transform, requestedScale, { x, y }));
+  };
+
+  const zoomFromCenter = (factor: number): void => {
+    if (!transform) return;
+    zoomAround(transform.scale * factor, viewport.clientWidth / 2, viewport.clientHeight / 2);
+  };
+
+  controls.zoomOut.addEventListener("click", () => zoomFromCenter(0.82), {
+    signal: abort.signal
+  });
+  controls.zoomIn.addEventListener("click", () => zoomFromCenter(1.22), {
+    signal: abort.signal
+  });
+  controls.fit.addEventListener("click", fitView, { signal: abort.signal });
+
+  viewport.addEventListener(
+    "wheel",
+    (event) => {
+      if (!transform || (!event.ctrlKey && !event.metaKey)) return;
+      event.preventDefault();
+      const bounds = viewport.getBoundingClientRect();
+      const delta = event.deltaY * (event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16 : 1);
+      zoomAround(
+        transform.scale * Math.exp(-delta * 0.0015),
+        event.clientX - bounds.left,
+        event.clientY - bounds.top
+      );
+    },
+    { passive: false, signal: abort.signal }
+  );
+
+  viewport.addEventListener(
+    "pointerdown",
+    (event) => {
+      if (event.button !== 0 || activePointerId !== null || !transform) return;
+      const target = event.target instanceof Element ? event.target : null;
+      if (
+        target?.closest(
+          ".plan-item, .plan-mindmap__branch-title, button, a, input, select, textarea"
+        )
+      ) {
+        return;
+      }
+      activePointerId = event.pointerId;
+      dragOrigin = { x: event.clientX, y: event.clientY };
+      transformOrigin = { x: transform.x, y: transform.y };
+      autoFit = false;
+      viewport.classList.add("plan-mindmap__viewport--dragging");
+      viewport.setPointerCapture(event.pointerId);
+    },
+    { signal: abort.signal }
+  );
+  viewport.addEventListener(
+    "pointermove",
+    (event) => {
+      if (event.pointerId !== activePointerId || !transform) return;
+      applyTransform({
+        ...transform,
+        x: transformOrigin.x + event.clientX - dragOrigin.x,
+        y: transformOrigin.y + event.clientY - dragOrigin.y
+      });
+    },
+    { signal: abort.signal }
+  );
+  const finishDragging = (event: PointerEvent): void => {
+    if (event.pointerId !== activePointerId) return;
+    activePointerId = null;
+    viewport.classList.remove("plan-mindmap__viewport--dragging");
+    if (viewport.hasPointerCapture(event.pointerId))
+      viewport.releasePointerCapture(event.pointerId);
+  };
+  viewport.addEventListener("pointerup", finishDragging, { signal: abort.signal });
+  viewport.addEventListener("pointercancel", finishDragging, { signal: abort.signal });
+
+  viewport.addEventListener(
+    "keydown",
+    (event) => {
+      if (event.target !== viewport) return;
+      if (event.key === "+" || event.key === "=") {
+        event.preventDefault();
+        zoomFromCenter(1.22);
+      } else if (event.key === "-") {
+        event.preventDefault();
+        zoomFromCenter(0.82);
+      } else if (event.key === "0") {
+        event.preventDefault();
+        fitView();
+      } else if (
+        transform &&
+        ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)
+      ) {
+        event.preventDefault();
+        autoFit = false;
+        applyTransform({
+          ...transform,
+          x: transform.x + (event.key === "ArrowLeft" ? 48 : event.key === "ArrowRight" ? -48 : 0),
+          y: transform.y + (event.key === "ArrowUp" ? 48 : event.key === "ArrowDown" ? -48 : 0)
+        });
+      }
+    },
+    { signal: abort.signal }
+  );
+  viewport.addEventListener(
+    "dblclick",
+    (event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest(".plan-item, .plan-mindmap__branch-title, button")) return;
+      fitView();
+    },
+    { signal: abort.signal }
+  );
+
+  const resizeObserver =
+    typeof ResizeObserver === "undefined"
+      ? null
+      : new ResizeObserver(() => {
+          syncBranchConnector();
+          if (autoFit) fitView();
+        });
+  resizeObserver?.observe(viewport);
+  resizeObserver?.observe(scene);
+  resizeObserver?.observe(branches);
+
+  syncBranchConnector();
+  if (transform) applyTransform(transform);
+  else fitView();
+
+  return () => {
+    abort.abort();
+    resizeObserver?.disconnect();
+    window.cancelAnimationFrame(fitFrame);
+  };
 }
 
 function createEmpty(completed: boolean): HTMLElement {
@@ -338,7 +651,7 @@ function createEmpty(completed: boolean): HTMLElement {
             className: "plan-state__icon",
             children: [icon(completed ? "check" : "plus")]
           }),
-          element("h3", { text: completed ? "暂无完成记录" : "暂无待办" })
+          element("h3", { text: completed ? t("plan.noCompleted") : t("plan.noPending") })
         ]
       })
     ]
@@ -363,6 +676,7 @@ function createPlanItem(
               className: "plan-item__topline",
               children: [
                 element("div", {
+                  className: "plan-item__summary",
                   children: [
                     element("h3", { className: "plan-item__title", text: item.title }),
                     element("span", {
@@ -374,7 +688,7 @@ function createPlanItem(
                 }),
                 element("span", {
                   className: "plan-item__position",
-                  text: complete ? "已打卡" : `#${index + 1}`
+                  text: complete ? t("plan.completedToast") : `#${index + 1}`
                 })
               ]
             }),
@@ -383,14 +697,23 @@ function createPlanItem(
               children: [
                 element("span", {
                   className: "plan-source-pill",
-                  text: SOURCE_LABELS[item.source]
+                  text: t(SOURCE_LABEL_KEYS[item.source])
+                }),
+                element("span", {
+                  className: "plan-time-pill",
+                  text: t("plan.scheduled", {
+                    duration: formatDuration(item.scheduledDurationMinutes)
+                  })
+                }),
+                element("span", {
+                  text: t(COMPLETION_MODE_LABEL_KEYS[item.completionMode])
                 }),
                 ...(item.bvid ? [element("span", { text: item.bvid })] : []),
                 element("span", {
                   text:
                     complete && item.completedAt
-                      ? `${formatDateTime(item.completedAt)} 完成`
-                      : `${formatDateTime(item.addedAt)} 添加`
+                      ? t("plan.completedAt", { time: formatDateTime(item.completedAt) })
+                      : t("plan.addedAt", { time: formatDateTime(item.addedAt) })
                 })
               ]
             }),
@@ -402,8 +725,8 @@ function createPlanItem(
     className: "plan-item__check",
     attrs: {
       type: "button",
-      title: complete ? "恢复到待办" : "标记为已完成",
-      "aria-label": complete ? `将“${item.title}”恢复到待办` : `将“${item.title}”标记为已完成`,
+      title: complete ? t("plan.restore") : t("plan.markCompleted"),
+      "aria-label": complete ? t("plan.restore") : t("plan.markCompleted"),
       "aria-pressed": complete
     },
     children: [icon(complete ? "check" : "plus")]
@@ -439,7 +762,7 @@ function createItemActions(
     const start = element("button", {
       className: "btn btn--primary",
       attrs: { type: "button", "data-testid": `plan-start-${item.id}` },
-      children: [icon("play"), "开始"]
+      children: [icon("play"), t("plan.start")]
     });
     start.addEventListener("click", () => void startWatching(item, start));
     actions.push(
@@ -451,7 +774,7 @@ function createItemActions(
     const restore = element("button", {
       className: "btn btn--soft",
       attrs: { type: "button" },
-      children: [icon("refresh"), "恢复到待办"]
+      children: [icon("refresh"), t("plan.restore")]
     });
     restore.addEventListener("click", () => void setCompleted(item, false, restore));
     actions.push(restore);
@@ -459,7 +782,11 @@ function createItemActions(
 
   const edit = element("button", {
     className: "btn btn--icon",
-    attrs: { type: "button", title: "编辑", "aria-label": `编辑“${item.title}”` },
+    attrs: {
+      type: "button",
+      title: t("common.edit"),
+      "aria-label": t("plan.editItem", { title: item.title })
+    },
     children: [icon("edit")]
   });
   edit.addEventListener("click", () => {
@@ -470,7 +797,11 @@ function createItemActions(
 
   const remove = element("button", {
     className: "btn btn--icon btn--danger",
-    attrs: { type: "button", title: "删除", "aria-label": `删除“${item.title}”` },
+    attrs: {
+      type: "button",
+      title: t("common.delete"),
+      "aria-label": t("plan.removeItem", { title: item.title })
+    },
     children: [icon("trash")]
   });
   remove.addEventListener("click", () => void deleteItem(item, remove));
@@ -488,11 +819,11 @@ function createMoveButton(
   const label =
     variant === "mindmap"
       ? direction === "up"
-        ? "左移"
-        : "右移"
+        ? t("plan.moveLeft")
+        : t("plan.moveRight")
       : direction === "up"
-        ? "上移"
-        : "下移";
+        ? t("plan.moveUp")
+        : t("plan.moveDown");
   const button = element("button", {
     className: `btn btn--icon plan-move-button plan-move-button--${variant}`,
     attrs: {
@@ -519,16 +850,29 @@ function createEditForm(item: PlanItem): HTMLElement {
       required: true
     }
   });
+  const completionMode = createCompletionModeControl(
+    `plan-completion-mode-${item.id}`,
+    item.completionMode
+  );
   const url = element("input", {
     className: "plan-input",
     attrs: { type: "url", value: item.url, maxlength: "500", required: true, inputmode: "url" }
   });
+  const duration = createDurationInput(
+    `plan-duration-${item.id}`,
+    item.scheduledDurationMinutes,
+    `plan-duration-help-${item.id}`
+  );
   const save = element("button", {
     className: "btn btn--primary",
-    text: "保存",
+    text: t("common.save"),
     attrs: { type: "submit" }
   });
-  const cancel = element("button", { className: "btn", text: "取消", attrs: { type: "button" } });
+  const cancel = element("button", {
+    className: "btn",
+    text: t("common.cancel"),
+    attrs: { type: "button" }
+  });
   cancel.addEventListener("click", () => {
     editingItemId = null;
     renderPlan({ focusItemId: item.id });
@@ -536,29 +880,59 @@ function createEditForm(item: PlanItem): HTMLElement {
 
   const form = element("form", {
     className: "plan-edit-form",
-    attrs: { "aria-label": `编辑“${item.title}”` },
+    attrs: { "aria-label": t("plan.editItem", { title: item.title }) },
     children: [
       element("label", {
         className: "plan-field",
-        children: [element("span", { text: "标题" }), title]
+        children: [element("span", { text: t("plan.titleField") }), title]
       }),
       element("label", {
         className: "plan-field",
-        children: [element("span", { text: "内容链接" }), url]
+        children: [
+          element("span", { text: t("plan.completionMode") }),
+          completionMode.select,
+          completionMode.description
+        ]
+      }),
+      element("label", {
+        className: "plan-field",
+        children: [element("span", { text: t("plan.urlField") }), url]
+      }),
+      element("label", {
+        className: "plan-field",
+        children: [
+          element("span", { text: t("plan.durationField") }),
+          duration,
+          element("small", {
+            className: "plan-field__hint",
+            text: t("plan.durationHint"),
+            attrs: { id: `plan-duration-help-${item.id}` }
+          })
+        ]
       }),
       element("div", { className: "plan-form__actions", children: [save, cancel] })
     ]
   });
   form.addEventListener("submit", (event) => {
     event.preventDefault();
-    void updateItem(item, title.value, url.value, save);
+    void updateItem(
+      item,
+      title.value,
+      url.value,
+      duration.value,
+      completionMode.select.value as PlanCompletionMode,
+      save
+    );
   });
   return form;
 }
 
 async function startWatching(item: PlanItem, button: HTMLButtonElement): Promise<void> {
-  setButtonBusy(button, true, "准备中…");
+  setButtonBusy(button, true, t("plan.requestingPermission"));
   try {
+    const granted = await permissionsRequest([`${item.origin}/*`]);
+    if (!granted) throw new Error(t("plan.permissionDenied"));
+    setButtonBusy(button, true, t("plan.started"));
     const result = await sendRequest({ type: "START_PLAN_ITEM", id: item.id });
     state = result.state;
     window.location.assign(result.url);
@@ -577,7 +951,7 @@ async function setCompleted(
   try {
     state = await sendRequest({ type: "SET_PLAN_ITEM_COMPLETED", id: item.id, completed });
     editingItemId = null;
-    toast(completed ? "已完成" : "已恢复到待办");
+    toast(completed ? t("plan.completedToast") : t("plan.restoredToast"));
     renderPlan({ focusItemId: item.id });
   } catch (error) {
     control.disabled = false;
@@ -685,7 +1059,7 @@ async function reorderPlanItems(
   );
   try {
     state = await sendRequest({ type: "REORDER_PLAN_ITEMS", orderedIds });
-    toast("顺序已更新");
+    toast(t("plan.reordered"));
     renderPlan({ focusItemId: sourceId });
   } catch (error) {
     toast(describeError(error), "error");
@@ -696,19 +1070,36 @@ async function updateItem(
   item: PlanItem,
   titleValue: string,
   urlValue: string,
+  durationValue: string,
+  completionMode: PlanCompletionMode,
   button: HTMLButtonElement
 ): Promise<void> {
   const title = titleValue.trim();
   const url = urlValue.trim();
   if (!title || !url) {
-    toast("请填写标题和内容链接", "error");
+    toast(t("plan.required"), "error");
     return;
   }
-  setButtonBusy(button, true, "保存中…");
+  const scheduledDurationMinutes = readDurationMinutes(durationValue);
+  if (scheduledDurationMinutes === null) {
+    toast(
+      t("plan.invalidDuration", {
+        min: MIN_PLAN_DURATION_MINUTES,
+        max: MAX_PLAN_DURATION_MINUTES
+      }),
+      "error"
+    );
+    return;
+  }
+  setButtonBusy(button, true, t("common.saving"));
   try {
-    state = await sendRequest({ type: "UPDATE_PLAN_ITEM", id: item.id, patch: { title, url } });
+    state = await sendRequest({
+      type: "UPDATE_PLAN_ITEM",
+      id: item.id,
+      patch: { title, url, scheduledDurationMinutes, completionMode }
+    });
     editingItemId = null;
-    toast("更改已保存");
+    toast(t("plan.saved"));
     renderPlan({ focusItemId: item.id });
   } catch (error) {
     setButtonBusy(button, false);
@@ -717,12 +1108,12 @@ async function updateItem(
 }
 
 async function deleteItem(item: PlanItem, button: HTMLButtonElement): Promise<void> {
-  if (!window.confirm(`确定删除“${item.title}”吗？此操作不会影响原网站上的内容。`)) return;
+  if (!window.confirm(t("plan.removeQuestion", { title: item.title }))) return;
   button.disabled = true;
   try {
     state = await sendRequest({ type: "DELETE_PLAN_ITEM", id: item.id });
     editingItemId = null;
-    toast("已从计划中删除");
+    toast(t("plan.removed"));
     renderPlan();
     document.querySelector<HTMLButtonElement>('[data-testid="plan-add-open"]')?.focus();
   } catch (error) {
@@ -746,7 +1137,7 @@ function openAddDialog(): void {
       inputmode: "url",
       autocomplete: "off",
       maxlength: "500",
-      placeholder: "粘贴内容链接",
+      placeholder: t("plan.urlPlaceholder"),
       required: true,
       "aria-describedby": "plan-url-error",
       "data-testid": "plan-add-url"
@@ -759,10 +1150,19 @@ function openAddDialog(): void {
       type: "text",
       autocomplete: "off",
       maxlength: MAX_PLAN_TITLE_LENGTH,
-      placeholder: "可选；留空使用网站名称",
+      placeholder: t("plan.titlePlaceholder"),
       "data-testid": "plan-add-title"
     }
   });
+  const duration = createDurationInput(
+    "plan-scheduled-duration",
+    state?.settings.watchDurationMinutes ?? 45,
+    "plan-duration-help plan-url-error"
+  );
+  const completionMode = createCompletionModeControl(
+    "plan-completion-mode",
+    state?.settings.defaultCompletionMode ?? "flow"
+  );
   const error = element("p", {
     className: "plan-field__error",
     attrs: { id: "plan-url-error", role: "alert", hidden: true }
@@ -770,12 +1170,16 @@ function openAddDialog(): void {
   const submit = element("button", {
     className: "btn btn--primary",
     attrs: { type: "submit", "data-testid": "plan-add-submit" },
-    children: [icon("plus"), "加入待办"]
+    children: [icon("plus"), t("plan.add")]
   });
-  const cancel = element("button", { className: "btn", text: "取消", attrs: { type: "button" } });
+  const cancel = element("button", {
+    className: "btn",
+    text: t("common.cancel"),
+    attrs: { type: "button" }
+  });
   const iconClose = element("button", {
     className: "btn btn--icon",
-    attrs: { type: "button", title: "关闭", "aria-label": "关闭添加待办" },
+    attrs: { type: "button", title: t("common.close"), "aria-label": t("common.close") },
     children: [icon("close")]
   });
   const form = element("form", {
@@ -784,7 +1188,10 @@ function openAddDialog(): void {
     children: [
       element("header", {
         className: "plan-dialog__header",
-        children: [element("h2", { text: "添加待办", attrs: { id: "plan-add-title" } }), iconClose]
+        children: [
+          element("h2", { text: t("plan.add"), attrs: { id: "plan-add-title" } }),
+          iconClose
+        ]
       }),
       element("div", {
         className: "plan-dialog__body plan-form__body",
@@ -792,7 +1199,7 @@ function openAddDialog(): void {
           element("div", {
             className: "plan-field",
             children: [
-              element("label", { text: "内容链接", attrs: { for: "plan-video-url" } }),
+              element("label", { text: t("plan.urlField"), attrs: { for: "plan-video-url" } }),
               url,
               error
             ]
@@ -800,8 +1207,34 @@ function openAddDialog(): void {
           element("div", {
             className: "plan-field",
             children: [
-              element("label", { text: "标题", attrs: { for: "plan-video-title" } }),
+              element("label", { text: t("plan.titleField"), attrs: { for: "plan-video-title" } }),
               title
+            ]
+          }),
+          element("div", {
+            className: "plan-field",
+            children: [
+              element("label", {
+                text: t("plan.durationField"),
+                attrs: { for: "plan-scheduled-duration" }
+              }),
+              duration,
+              element("small", {
+                className: "plan-field__hint",
+                text: t("plan.durationHint"),
+                attrs: { id: "plan-duration-help" }
+              })
+            ]
+          }),
+          element("div", {
+            className: "plan-field",
+            children: [
+              element("label", {
+                text: t("plan.completionMode"),
+                attrs: { for: "plan-completion-mode" }
+              }),
+              completionMode.select,
+              completionMode.description
             ]
           })
         ]
@@ -818,7 +1251,7 @@ function openAddDialog(): void {
     event.preventDefault();
     error.hidden = true;
     url.removeAttribute("aria-invalid");
-    void addItem(url, title, error, submit, dialog);
+    void addItem(url, title, duration, completionMode.select, error, submit, dialog);
   });
   const closeDialog = () => dialog.close();
   cancel.addEventListener("click", closeDialog);
@@ -835,6 +1268,8 @@ function openAddDialog(): void {
 async function addItem(
   urlInput: HTMLInputElement,
   titleInput: HTMLInputElement,
+  durationInput: HTMLInputElement,
+  completionModeInput: HTMLSelectElement,
   error: HTMLElement,
   submit: HTMLButtonElement,
   dialog: HTMLDialogElement
@@ -842,17 +1277,35 @@ async function addItem(
   const url = urlInput.value.trim();
   const title = titleInput.value.trim();
   if (!url) {
-    showFieldError(urlInput, error, "请输入有效的 HTTP 或 HTTPS 链接");
+    showFieldError(urlInput, error, t("plan.invalidUrl"));
     return;
   }
-  setButtonBusy(submit, true, "正在添加…");
+  const scheduledDurationMinutes = readDurationMinutes(durationInput.value);
+  if (scheduledDurationMinutes === null) {
+    showFieldError(
+      durationInput,
+      error,
+      t("plan.invalidDuration", {
+        min: MIN_PLAN_DURATION_MINUTES,
+        max: MAX_PLAN_DURATION_MINUTES
+      })
+    );
+    return;
+  }
+  setButtonBusy(submit, true, t("common.processing"));
   try {
     const previousIds = new Set(state?.queue.items.map((item) => item.id) ?? []);
-    state = await sendRequest({ type: "ADD_PLAN_ITEM", url, ...(title ? { title } : {}) });
+    state = await sendRequest({
+      type: "ADD_PLAN_ITEM",
+      url,
+      scheduledDurationMinutes,
+      completionMode: completionModeInput.value as PlanCompletionMode,
+      ...(title ? { title } : {})
+    });
     const addedItem = state.queue.items.find((item) => !previousIds.has(item.id));
     editingItemId = null;
     dialog.close();
-    toast("已加入待办");
+    toast(t("plan.added"));
     renderPlan(addedItem ? { focusItemId: addedItem.id } : {});
   } catch (caught) {
     setButtonBusy(submit, false);
@@ -868,13 +1321,22 @@ function showFieldError(input: HTMLInputElement, output: HTMLElement, message: s
 }
 
 function openBulkImportDialog(): void {
+  const bulkDuration = createDurationInput(
+    "plan-bulk-duration",
+    state?.settings.watchDurationMinutes ?? 45,
+    "plan-bulk-error"
+  );
+  const bulkCompletionMode = createCompletionModeControl(
+    "plan-bulk-completion-mode",
+    state?.settings.defaultCompletionMode ?? "flow"
+  );
   const textarea = element("textarea", {
     className: "plan-input plan-bulk-textarea",
     attrs: {
       rows: "8",
       maxlength: "100000",
-      placeholder: "每行一个链接，或：\n标题 | 内容链接",
-      "aria-label": "批量内容链接",
+      placeholder: t("plan.bulkPlaceholder"),
+      "aria-label": t("plan.contentList"),
       "aria-describedby": "plan-bulk-error"
     }
   });
@@ -886,17 +1348,21 @@ function openBulkImportDialog(): void {
   const parse = element("button", {
     className: "btn btn--soft",
     attrs: { type: "button" },
-    children: [icon("refresh"), "检查链接"]
+    children: [icon("refresh"), t("plan.checkLinks")]
   });
   const importButton = element("button", {
     className: "btn btn--primary",
-    text: "导入所选",
+    text: t("plan.importSelected"),
     attrs: { type: "button", disabled: true }
   });
-  const close = element("button", { className: "btn", text: "取消", attrs: { type: "button" } });
+  const close = element("button", {
+    className: "btn",
+    text: t("common.cancel"),
+    attrs: { type: "button" }
+  });
   const iconClose = element("button", {
     className: "btn btn--icon",
-    attrs: { type: "button", title: "关闭", "aria-label": "关闭批量导入" },
+    attrs: { type: "button", title: t("common.close"), "aria-label": t("common.close") },
     children: [icon("close")]
   });
 
@@ -912,7 +1378,7 @@ function openBulkImportDialog(): void {
             children: [
               element("div", {
                 children: [
-                  element("h2", { text: "批量粘贴内容", attrs: { id: "plan-bulk-title" } })
+                  element("h2", { text: t("plan.bulkTitle"), attrs: { id: "plan-bulk-title" } })
                 ]
               }),
               iconClose
@@ -924,9 +1390,34 @@ function openBulkImportDialog(): void {
               element("div", {
                 className: "plan-field",
                 children: [
-                  element("label", { text: "内容清单", attrs: { for: "plan-bulk-input" } }),
+                  element("label", {
+                    text: t("plan.contentList"),
+                    attrs: { for: "plan-bulk-input" }
+                  }),
                   textarea,
                   error
+                ]
+              }),
+              element("div", {
+                className: "plan-field",
+                children: [
+                  element("label", {
+                    text: t("plan.durationField"),
+                    attrs: { for: "plan-bulk-duration" }
+                  }),
+                  bulkDuration,
+                  element("small", { className: "plan-field__hint", text: t("plan.durationHint") })
+                ]
+              }),
+              element("div", {
+                className: "plan-field",
+                children: [
+                  element("label", {
+                    text: t("plan.completionMode"),
+                    attrs: { for: "plan-bulk-completion-mode" }
+                  }),
+                  bulkCompletionMode.select,
+                  bulkCompletionMode.description
                 ]
               }),
               element("div", {
@@ -945,7 +1436,22 @@ function openBulkImportDialog(): void {
 
   let parsedItems: PlanItemInput[] = [];
   parse.addEventListener("click", () => {
-    const result = parsePlanImport(textarea.value);
+    const scheduledDurationMinutes = readDurationMinutes(bulkDuration.value);
+    if (scheduledDurationMinutes === null) {
+      error.hidden = false;
+      error.textContent = t("plan.invalidDuration", {
+        min: MIN_PLAN_DURATION_MINUTES,
+        max: MAX_PLAN_DURATION_MINUTES
+      });
+      bulkDuration.focus();
+      importButton.disabled = true;
+      return;
+    }
+    const result = parsePlanImport(
+      textarea.value,
+      scheduledDurationMinutes,
+      bulkCompletionMode.select.value as PlanCompletionMode
+    );
     parsedItems = result.items;
     renderImportPreview(
       preview,
@@ -959,8 +1465,8 @@ function openBulkImportDialog(): void {
       parsedItems.length > 0
         ? ""
         : result.truncated
-          ? "输入过长，且没有找到有效链接"
-          : "没有找到有效链接";
+          ? t("plan.inputTooLong")
+          : t("plan.noValidLinks");
   });
   importButton.addEventListener("click", () => {
     const selectedIds = new Set(
@@ -996,10 +1502,12 @@ function renderImportPreview(
     return;
   }
 
-  const selectionCount = element("span", { text: `已选择 ${items.length} 项` });
+  const selectionCount = element("span", {
+    text: t("plan.selectedCount", { count: items.length })
+  });
   const selectAll = element("button", {
     className: "btn",
-    text: "取消全选",
+    text: t("plan.clearSelection"),
     attrs: { type: "button" }
   });
   const checkboxes = items.map((item) =>
@@ -1008,15 +1516,18 @@ function renderImportPreview(
         type: "checkbox",
         value: item.url,
         checked: true,
-        "aria-label": `选择${item.title ?? item.url ?? "计划内容"}`
+        "aria-label": t("plan.selectItem", {
+          item: item.title ?? item.url ?? t("plan.contentItem")
+        })
       }
     })
   );
   const refreshCount = () => {
     const selected = checkboxes.filter((checkbox) => checkbox.checked).length;
-    selectionCount.textContent = `已选择 ${selected} 项`;
+    selectionCount.textContent = t("plan.selectedCount", { count: selected });
     importButton.disabled = selected === 0;
-    selectAll.textContent = selected === checkboxes.length ? "取消全选" : "全选";
+    selectAll.textContent =
+      selected === checkboxes.length ? t("plan.clearSelection") : t("plan.selectAll");
   };
   checkboxes.forEach((checkbox) => checkbox.addEventListener("change", refreshCount));
   selectAll.addEventListener("click", () => {
@@ -1028,8 +1539,8 @@ function renderImportPreview(
   });
 
   const notes: string[] = [];
-  if (duplicateCount > 0) notes.push(`已合并 ${duplicateCount} 个重复项`);
-  if (invalidCount > 0) notes.push(`${invalidCount} 行未识别`);
+  if (duplicateCount > 0) notes.push(t("plan.duplicatesMerged", { count: duplicateCount }));
+  if (invalidCount > 0) notes.push(t("plan.invalidLines", { count: invalidCount }));
   const list = element("ul", {
     className: "plan-selection-list",
     children: items.map((item, index) =>
@@ -1043,7 +1554,7 @@ function renderImportPreview(
                 children: [
                   element("span", {
                     className: "plan-selection-item__title",
-                    text: item.title || item.url || "计划内容"
+                    text: item.title || item.url || t("plan.contentItem")
                   }),
                   element("span", { className: "plan-selection-item__meta", text: item.url })
                 ]
@@ -1078,7 +1589,7 @@ async function importItems(
   dialog: HTMLDialogElement
 ): Promise<void> {
   if (items.length === 0) return;
-  setButtonBusy(button, true, "正在导入…");
+  setButtonBusy(button, true, t("common.processing"));
   let addedCount = 0;
   let skippedCount = 0;
   try {
@@ -1096,15 +1607,15 @@ async function importItems(
     dialog.close();
     toast(
       skippedCount > 0
-        ? `已导入 ${addedCount} 项，跳过 ${skippedCount} 个重复项`
-        : `已导入 ${addedCount} 项`
+        ? t("plan.importedSkipped", { count: addedCount, skipped: skippedCount })
+        : t("plan.imported", { count: addedCount })
     );
     renderPlan();
   } catch (error) {
     setButtonBusy(button, false);
     toast(
       addedCount > 0
-        ? `已导入 ${addedCount} 项；后续导入中断。${describeError(error)}`
+        ? t("plan.importInterrupted", { count: addedCount, error: describeError(error) })
         : describeError(error),
       "error"
     );
@@ -1115,7 +1626,11 @@ async function importItems(
   }
 }
 
-function parsePlanImport(value: string): {
+function parsePlanImport(
+  value: string,
+  scheduledDurationMinutes: number,
+  completionMode: PlanCompletionMode
+): {
   items: PlanItemInput[];
   rejected: string[];
   duplicateCount: number;
@@ -1132,7 +1647,7 @@ function parsePlanImport(value: string): {
   for (const rawLine of lines) {
     const line = rawLine.trim();
     if (!line) continue;
-    const parsed = parsePlanImportLine(line);
+    const parsed = parsePlanImportLine(line, scheduledDurationMinutes, completionMode);
     if (!parsed) {
       rejected.push(line);
       continue;
@@ -1152,7 +1667,9 @@ function parsePlanImport(value: string): {
 }
 
 function parsePlanImportLine(
-  line: string
+  line: string,
+  scheduledDurationMinutes: number,
+  completionMode: PlanCompletionMode
 ): (PlanItemInput & { url: string; source: "manual" }) | null {
   const markdown = /^\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)$/iu.exec(line);
   let title = markdown?.[1]?.trim() ?? "";
@@ -1175,7 +1692,13 @@ function parsePlanImportLine(
     }
     url.hash = "";
     const normalizedTitle = title.slice(0, MAX_PLAN_TITLE_LENGTH) || url.hostname;
-    return { url: url.href, title: normalizedTitle, source: "manual" };
+    return {
+      url: url.href,
+      title: normalizedTitle,
+      source: "manual",
+      scheduledDurationMinutes,
+      completionMode
+    };
   } catch {
     return null;
   }
@@ -1193,15 +1716,87 @@ function sortedItems(planState: PlanState, status: "pending" | "completed"): Pla
 
 function formatDateTime(timestamp: number): string {
   try {
-    return new Intl.DateTimeFormat("zh-CN", {
+    return new Intl.DateTimeFormat(getResolvedLocale(), {
       month: "numeric",
       day: "numeric",
       hour: "2-digit",
       minute: "2-digit"
     }).format(new Date(timestamp));
   } catch {
-    return "本地时间";
+    return "—";
   }
+}
+
+function formatDuration(minutes: number): string {
+  if (minutes < 60) return t("duration.minutes", { minutes });
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return remainder === 0
+    ? t("duration.hours", { hours })
+    : t("duration.hoursMinutes", { hours, minutes: remainder });
+}
+
+function createDurationInput(id: string, value: number, describedBy: string): HTMLInputElement {
+  return element("input", {
+    className: "plan-input",
+    attrs: {
+      id,
+      type: "number",
+      inputmode: "numeric",
+      min: MIN_PLAN_DURATION_MINUTES,
+      max: MAX_PLAN_DURATION_MINUTES,
+      step: "1",
+      value,
+      required: true,
+      "aria-describedby": describedBy,
+      "data-testid": id === "plan-scheduled-duration" ? "plan-add-duration" : undefined
+    }
+  });
+}
+
+function createCompletionModeControl(
+  id: string,
+  selectedMode: PlanCompletionMode
+): { select: HTMLSelectElement; description: HTMLElement } {
+  const descriptionId = `${id}-description`;
+  const description = element("small", {
+    className: "plan-field__hint plan-mode-description",
+    text: t(COMPLETION_MODE_DESCRIPTION_KEYS[selectedMode]),
+    attrs: { id: descriptionId, "aria-live": "polite" }
+  });
+  const select = element("select", {
+    className: "plan-input plan-select",
+    attrs: {
+      id,
+      required: true,
+      "aria-describedby": descriptionId,
+      "data-testid": id === "plan-completion-mode" ? "plan-add-completion-mode" : undefined
+    },
+    children: (
+      Object.entries(COMPLETION_MODE_LABEL_KEYS) as Array<[PlanCompletionMode, MessageKey]>
+    ).map(([mode, labelKey]) =>
+      element("option", {
+        text: t(labelKey),
+        attrs: { value: mode, selected: mode === selectedMode }
+      })
+    )
+  });
+  select.addEventListener("change", () => {
+    description.textContent = t(
+      COMPLETION_MODE_DESCRIPTION_KEYS[select.value as PlanCompletionMode]
+    );
+  });
+  return { select, description };
+}
+
+function readDurationMinutes(value: string): number | null {
+  if (!/^\d+$/u.test(value.trim())) return null;
+  const minutes = Number(value);
+  return Number.isInteger(minutes) &&
+    minutes >= MIN_PLAN_DURATION_MINUTES &&
+    minutes <= MAX_PLAN_DURATION_MINUTES
+    ? minutes
+    : null;
 }
 
 function cssEscape(value: string): string {

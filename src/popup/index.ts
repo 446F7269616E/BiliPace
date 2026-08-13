@@ -1,10 +1,19 @@
-import { tabsQuery } from "../shared/browser";
+import {
+  storageAddChangeListener,
+  tabsAddActivatedListener,
+  tabsAddUpdatedListener,
+  tabsQuery
+} from "../shared/browser";
+import { configureLocale, localizeDocumentTitle, t } from "../shared/i18n";
 import { sendRequest } from "../shared/messages";
+import { resolveTargetAllowance } from "../shared/remaining-time";
+import { STORAGE_KEYS } from "../shared/storage-keys";
 import type {
   FocusSettings,
   ManagedSite,
   PageDecision,
   SiteTargetSettings,
+  TimePeriodSettings,
   TrackingStatus,
   UsageSummary
 } from "../shared/types";
@@ -21,52 +30,120 @@ interface PopupData {
 interface CurrentSiteSummary {
   site: ManagedSite | null;
   target: SiteTargetSettings | null;
+  activePeriod: TimePeriodSettings | null;
   hostname: string | null;
   usedSeconds: number;
+  allowanceUsedSeconds: number;
   limitSeconds: number | null;
+  remainingSeconds: number | null;
 }
 
 const app = assertAppRoot();
 let currentData: PopupData | null = null;
+let refreshSequence = 0;
+let refreshScheduled = false;
 
+configureLocale("system");
 void loadPopup();
-window.setInterval(() => void refreshLiveSummary(), 5_000);
+const syncTimer = window.setInterval(() => void refreshLiveSummary(), 5_000);
+const displayTimer = window.setInterval(() => advanceLiveUsage(), 1_000);
+const removeTabActivatedListener = tabsAddActivatedListener(() => scheduleRefresh());
+const removeTabUpdatedListener = tabsAddUpdatedListener((_tabId, changeInfo, tab) => {
+  if (tab.active && (changeInfo.url !== undefined || changeInfo.status === "complete")) {
+    scheduleRefresh();
+  }
+});
+const removeStorageListener = storageAddChangeListener((changes, areaName) => {
+  if (areaName === "local" && changes[STORAGE_KEYS.settings]) scheduleRefresh();
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") scheduleRefresh();
+});
+window.addEventListener(
+  "pagehide",
+  () => {
+    window.clearInterval(syncTimer);
+    window.clearInterval(displayTimer);
+    removeTabActivatedListener();
+    removeTabUpdatedListener();
+    removeStorageListener();
+  },
+  { once: true }
+);
 
 async function loadPopup(): Promise<void> {
   renderLoading();
   try {
-    const tabsPromise = tabsQuery({ active: true, currentWindow: true });
-    const [settings, usage, trackingStatus, tabs] = await Promise.all([
-      sendRequest({ type: "GET_SETTINGS" }),
-      sendRequest({ type: "GET_USAGE", period: "day" }),
-      sendRequest({ type: "GET_TRACKING_STATUS" }),
-      tabsPromise
-    ]);
-    const pageUrl = tabs[0]?.url ?? null;
-    const pageDecision = pageUrl
-      ? await sendRequest({ type: "GET_PAGE_DECISION", url: pageUrl })
-      : null;
-    renderPopup({ settings, usage, trackingStatus, pageDecision, pageUrl });
+    const data = await fetchPopupData();
+    configureLocale(data.settings.locale);
+    localizeDocumentTitle("popup");
+    renderPopup(data);
   } catch (error) {
     renderError(describeError(error));
   }
 }
 
 async function refreshLiveSummary(): Promise<void> {
-  if (!currentData || document.visibilityState !== "visible") return;
+  if (document.visibilityState !== "visible") return;
+  const sequence = ++refreshSequence;
   try {
-    const pageDecisionPromise = currentData.pageUrl
-      ? sendRequest({ type: "GET_PAGE_DECISION", url: currentData.pageUrl })
-      : Promise.resolve(null);
-    const [usage, trackingStatus, pageDecision] = await Promise.all([
-      sendRequest({ type: "GET_USAGE", period: "day" }),
-      sendRequest({ type: "GET_TRACKING_STATUS" }),
-      pageDecisionPromise
-    ]);
-    renderPopup({ ...currentData, usage, trackingStatus, pageDecision });
+    const data = await fetchPopupData();
+    if (sequence !== refreshSequence) return;
+    if (data.settings.locale !== currentData?.settings.locale) {
+      configureLocale(data.settings.locale);
+      localizeDocumentTitle("popup");
+    }
+    renderPopup(data);
   } catch {
     // 保留最近一次确认的数据，等待下一轮刷新恢复。
   }
+}
+
+async function fetchPopupData(): Promise<PopupData> {
+  const [settings, usage, trackingStatus, tabs] = await Promise.all([
+    sendRequest({ type: "GET_SETTINGS" }),
+    sendRequest({ type: "GET_USAGE", period: "day" }),
+    sendRequest({ type: "GET_TRACKING_STATUS" }),
+    tabsQuery({ active: true, currentWindow: true })
+  ]);
+  const pageUrl = tabs[0]?.url ?? null;
+  const httpUrl = parseHttpUrl(pageUrl);
+  const pageDecision = httpUrl
+    ? await sendRequest({ type: "GET_PAGE_DECISION", url: httpUrl.href })
+    : null;
+  return { settings, usage, trackingStatus, pageDecision, pageUrl };
+}
+
+function scheduleRefresh(): void {
+  if (refreshScheduled) return;
+  refreshScheduled = true;
+  window.setTimeout(() => {
+    refreshScheduled = false;
+    void refreshLiveSummary();
+  }, 0);
+}
+
+function advanceLiveUsage(): void {
+  const data = currentData;
+  if (!data || document.visibilityState !== "visible" || !data.trackingStatus.isTracking) return;
+  const targetId = data.trackingStatus.targetId;
+  if (!targetId || data.pageDecision?.targetId !== targetId) return;
+  const activePeriodId = data.pageDecision.activePeriodId;
+  const usage: UsageSummary = {
+    ...data.usage,
+    totalSeconds: data.usage.totalSeconds + 1,
+    byTarget: {
+      ...data.usage.byTarget,
+      [targetId]: (data.usage.byTarget[targetId] ?? 0) + 1
+    },
+    byPeriod: activePeriodId
+      ? {
+          ...data.usage.byPeriod,
+          [activePeriodId]: (data.usage.byPeriod[activePeriodId] ?? 0) + 1
+        }
+      : data.usage.byPeriod
+  };
+  renderPopup({ ...data, usage });
 }
 
 function renderLoading(): void {
@@ -78,7 +155,7 @@ function renderLoading(): void {
         createHeader(),
         element("section", {
           className: "current-site-card card skeleton",
-          text: "正在读取当前网站使用时间"
+          text: t("popup.loading")
         }),
         createMainLink()
       ]
@@ -89,7 +166,7 @@ function renderLoading(): void {
 function renderError(message: string): void {
   const retry = element("button", {
     className: "btn btn--primary",
-    text: "重新加载",
+    text: t("options.reload"),
     attrs: { type: "button" }
   });
   retry.addEventListener("click", () => void loadPopup());
@@ -106,7 +183,7 @@ function renderError(message: string): void {
             element("div", {
               children: [
                 element("div", { className: "state-view__icon", children: [icon("warning")] }),
-                element("h2", { text: "使用时间加载失败" }),
+                element("h2", { text: t("popup.loadFailed") }),
                 element("p", { text: message }),
                 retry
               ]
@@ -122,6 +199,11 @@ function renderError(message: string): void {
 function renderPopup(data: PopupData): void {
   currentData = data;
   const summary = resolveCurrentSiteSummary(data);
+  const existingCard = app.querySelector<HTMLElement>(".current-site-card");
+  if (existingCard && app.querySelector(".popup-shell")) {
+    existingCard.replaceWith(createCurrentSiteCard(data, summary));
+    return;
+  }
   app.replaceChildren(
     element("div", {
       className: "popup-shell",
@@ -131,7 +213,7 @@ function renderPopup(data: PopupData): void {
         createMainLink(),
         element("p", {
           className: "popup-footer",
-          text: "使用时间仅保存在当前浏览器"
+          text: t("popup.localOnly")
         })
       ]
     })
@@ -157,38 +239,45 @@ function resolveCurrentSiteSummary(data: PopupData): CurrentSiteSummary {
       ) ?? null);
   const target = candidateTarget?.siteId === site?.id ? candidateTarget : null;
   const targetIds = target ? [target.id] : (site?.targetIds ?? []);
-  const usedSeconds = targetIds.reduce(
+  const fallbackUsedSeconds = targetIds.reduce(
     (total, id) => total + Math.max(0, data.usage.byTarget[id] ?? 0),
     0
   );
-  const limitSeconds =
-    target?.dailyLimitMinutes === null || target?.dailyLimitMinutes === undefined
-      ? null
-      : target.dailyLimitMinutes * 60;
+  const allowance = target
+    ? resolveTargetAllowance(target, data.usage, data.pageDecision?.activePeriodId)
+    : null;
 
   return {
     site,
     target,
+    activePeriod: allowance?.activePeriod ?? null,
     hostname: site?.hostname ?? parsedUrl?.hostname ?? null,
-    usedSeconds,
-    limitSeconds
+    usedSeconds: allowance?.usedTodaySeconds ?? fallbackUsedSeconds,
+    allowanceUsedSeconds: allowance?.allowanceUsedSeconds ?? 0,
+    limitSeconds: allowance?.limitSeconds ?? null,
+    remainingSeconds: allowance?.remainingSeconds ?? null
   };
 }
 
 function createCurrentSiteCard(data: PopupData, summary: CurrentSiteSummary): HTMLElement {
   const configured = Boolean(summary.site);
-  const remainingSeconds =
-    summary.limitSeconds === null ? null : Math.max(0, summary.limitSeconds - summary.usedSeconds);
   const progress =
     summary.limitSeconds === null || summary.limitSeconds <= 0
       ? 0
-      : Math.min(100, (summary.usedSeconds / summary.limitSeconds) * 100);
-  const label = summary.site?.label || summary.hostname || "当前页面";
+      : Math.min(100, (summary.allowanceUsedSeconds / summary.limitSeconds) * 100);
+  const label = summary.site?.label || summary.hostname || t("popup.currentPage");
   const scope = summary.target
-    ? `${summary.hostname ?? "当前网站"} · ${summary.target.label}`
+    ? [
+        summary.hostname ?? t("popup.currentWebsite"),
+        summary.target.label,
+        summary.activePeriod?.name ||
+          (summary.activePeriod ? t("popup.defaultPeriodName") : undefined)
+      ]
+        .filter(Boolean)
+        .join(" · ")
     : configured
       ? summary.hostname
-      : "尚未添加时间配置";
+      : t("popup.unconfiguredScope");
   const status = describeCurrentStatus(data, summary);
 
   return element("section", {
@@ -207,7 +296,7 @@ function createCurrentSiteCard(data: PopupData, summary: CurrentSiteSummary): HT
               }),
               element("div", {
                 children: [
-                  element("p", { text: "当前网站" }),
+                  element("p", { text: t("popup.currentWebsite") }),
                   element("h1", { text: label, attrs: { id: "current-site-title" } }),
                   element("span", { text: scope ?? "" })
                 ]
@@ -225,17 +314,17 @@ function createCurrentSiteCard(data: PopupData, summary: CurrentSiteSummary): HT
         className: "current-site-card__metrics",
         children: [
           createMetric(
-            "今日已用",
-            configured ? formatDuration(summary.usedSeconds) : "未配置",
+            t("popup.usedToday"),
+            configured ? formatDuration(summary.usedSeconds) : t("popup.notConfigured"),
             "popup-today-time"
           ),
           createMetric(
-            "剩余时间",
+            t("popup.remaining"),
             !configured
-              ? "未配置"
-              : remainingSeconds === null
-                ? "不限额"
-                : formatDuration(remainingSeconds),
+              ? t("popup.notConfigured")
+              : summary.remainingSeconds === null
+                ? t("popup.unlimited")
+                : formatDuration(summary.remainingSeconds),
             "popup-remaining-time"
           )
         ]
@@ -243,13 +332,13 @@ function createCurrentSiteCard(data: PopupData, summary: CurrentSiteSummary): HT
       summary.limitSeconds === null || !configured
         ? element("p", {
             className: "current-site-card__note",
-            text: configured ? "当前范围没有设置每日限额" : "进入主界面可为此网站添加时间配置"
+            text: configured ? t("popup.noLimit") : t("popup.configureHint")
           })
         : element("div", {
             className: "current-site-card__progress",
             attrs: {
               role: "progressbar",
-              "aria-label": "今日限额使用进度",
+              "aria-label": t("popup.limitProgress"),
               "aria-valuemin": "0",
               "aria-valuemax": "100",
               "aria-valuenow": String(Math.round(progress))
@@ -274,18 +363,18 @@ function describeCurrentStatus(
   data: PopupData,
   summary: CurrentSiteSummary
 ): { kind: "active" | "blocked" | "paused" | "unmanaged"; label: string } {
-  if (!summary.site) return { kind: "unmanaged", label: "未配置" };
-  if (!data.settings.enabled || !summary.site.enabled) {
-    return { kind: "paused", label: "已暂停" };
+  if (!summary.site) return { kind: "unmanaged", label: t("popup.notConfigured") };
+  if (!data.settings.enabled) {
+    return { kind: "paused", label: t("popup.paused") };
   }
-  if (data.pageDecision?.blocked) return { kind: "blocked", label: "当前受限" };
+  if (data.pageDecision?.blocked) return { kind: "blocked", label: t("popup.restricted") };
   const trackingTarget = data.trackingStatus.targetId
     ? data.settings.targets[data.trackingStatus.targetId]
     : undefined;
   if (data.trackingStatus.isTracking && trackingTarget?.siteId === summary.site.id) {
-    return { kind: "active", label: "正在计时" };
+    return { kind: "active", label: t("popup.tracking") };
   }
-  return { kind: "paused", label: "当前未计时" };
+  return { kind: "paused", label: t("popup.notTracking") };
 }
 
 function createHeader(): HTMLElement {
@@ -301,7 +390,7 @@ function createHeader(): HTMLElement {
             className: "brand__meta",
             children: [
               element("span", { text: "Hourleaf" }),
-              element("small", { text: "时间概览" })
+              element("small", { text: t("popup.summary") })
             ]
           })
         ]
@@ -319,7 +408,7 @@ function createMainLink(): HTMLAnchorElement {
       rel: "noreferrer",
       "data-testid": "popup-open-dashboard"
     },
-    children: [icon("bar-chart"), "进入 Hourleaf 主界面"]
+    children: [icon("bar-chart"), t("popup.openMain")]
   });
 }
 

@@ -1,7 +1,7 @@
 {
   "name": "hourleaf",
   "version": "0.6.0",
-  "description": "A local-first, cross-browser website focus and time insights extension.",
+  "description": "Local-first cross-browser website focus, planning, time insights, and optional local modules.",
   "license": "MIT",
   "keywords": [
     "browser-extension",

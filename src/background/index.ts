@@ -1,13 +1,24 @@
 import { AnalyticsService, parseLocalDate } from "../shared/analytics";
 import { ManagedSiteService, sameOrigin } from "../core/sites";
 import {
+  actionSetBadgeBackgroundColor,
+  actionSetBadgeText,
+  actionSetBadgeTextColor,
   getExtensionApi,
   runtimeAddMessageListener,
+  storageAddChangeListener,
+  tabsGet,
+  tabsQuery,
+  type ExtensionTab,
   type ExtensionMessageSender
 } from "../shared/browser";
 import { FocusDecisionService } from "../shared/focus";
 import { isHttpUrl, parseMessageRequest, type AnyRequest } from "../shared/messages";
-import { SettingsRepository, SiteModuleRepository } from "../shared/storage";
+import {
+  PeriodRuntimeRepository,
+  SettingsRepository,
+  SiteModuleRepository
+} from "../shared/storage";
 import type { DeepPartial, FocusSettings, UsagePeriod } from "../shared/types";
 import { PlanService } from "./plan";
 import { UsageTracker } from "./tracker";
@@ -17,6 +28,12 @@ import {
 } from "../modules/preinstalled";
 import { LocalModuleService } from "../modules/local/service";
 import type { PageDecision, TargetId } from "../shared/types";
+import { selectActiveTimePeriod } from "../shared/schedule";
+import { PeriodRuntimeService } from "../shared/period-runtime";
+import { PlanContentRegistrationService } from "./plan-registration";
+import { VisitConfirmationService } from "./visit-confirmation";
+import { resolveToolbarBadgeText } from "../shared/remaining-time";
+import { STORAGE_KEYS } from "../shared/storage-keys";
 
 const api = getExtensionApi();
 const settings = new SettingsRepository();
@@ -30,24 +47,67 @@ const resolveManagedTarget = async (url: string, targetId?: string) => {
   const resolved = await managedSites.resolve(url, targetId);
   return resolved ? { siteId: resolved.site.id, target: resolved.target } : null;
 };
-const focus = new FocusDecisionService(settings, undefined, analytics, resolveManagedTarget);
+const periodRuntime = new PeriodRuntimeService(settings, new PeriodRuntimeRepository(), analytics);
+const focus = new FocusDecisionService(
+  settings,
+  undefined,
+  analytics,
+  resolveManagedTarget,
+  periodRuntime
+);
 const plan = new PlanService(settings);
+const planRegistration = new PlanContentRegistrationService(settings);
+const visitConfirmations = new VisitConfirmationService();
 const tracker = new UsageTracker(
   analytics,
   Date.now,
   api,
-  (url, at, targetId) =>
-    Promise.all([
+  async (url, at, targetId) => {
+    const [focusDecision, planDecision] = await Promise.all([
       decideEffectiveFocus(url, new Date(at), targetId),
       plan.decideNavigation(url)
-    ]).then(([focusDecision, planDecision]) => !focusDecision.blocked && planDecision.allowed),
+    ]);
+    await reconcilePlanRegistration();
+    return !focusDecision.blocked && planDecision.allowed;
+  },
   async (url, targetId) => {
     const resolved = await managedSites.resolve(url, targetId);
-    return resolved ? { siteId: resolved.site.id, targetId: resolved.target.id } : null;
+    if (!resolved) return null;
+    const activePeriod = selectActiveTimePeriod(resolved.target, new Date());
+    return {
+      siteId: resolved.site.id,
+      targetId: resolved.target.id,
+      ...(activePeriod?.behavior === "timed" ? { activePeriodId: activePeriod.id } : {})
+    };
   }
 );
 
 if (api) {
+  const extensionRoot = api.runtime.getURL?.("") ?? "";
+  api.tabs?.onUpdated?.addListener((tabId, changeInfo) => {
+    if (!changeInfo.url) return;
+    void visitConfirmations
+      .revokeIfOriginChanged(tabId, changeInfo.url, extensionRoot)
+      .catch(() => undefined);
+  });
+  api.tabs?.onUpdated?.addListener((_tabId, changeInfo, tab) => {
+    if (changeInfo.url !== undefined || changeInfo.status === "complete") {
+      void refreshToolbarBadgeForTab(tab);
+    }
+  });
+  api.tabs?.onActivated?.addListener(({ tabId }) => {
+    void tabsGet(tabId)
+      .then((tab) => (tab ? refreshToolbarBadgeForTab(tab) : undefined))
+      .catch(() => undefined);
+  });
+  api.tabs?.onRemoved?.addListener((tabId) => {
+    void visitConfirmations.revokeTab(tabId).catch(() => undefined);
+  });
+  storageAddChangeListener((changes, areaName) => {
+    if (areaName === "local" && (changes[STORAGE_KEYS.settings] || changes[STORAGE_KEYS.usage])) {
+      scheduleToolbarBadgeRefresh();
+    }
+  });
   runtimeAddMessageListener(async (rawMessage, sender) => {
     const parsed = parseMessageRequest(rawMessage);
     if (!parsed || !isTrustedSender(sender)) return undefined;
@@ -76,6 +136,7 @@ if (api) {
   void tracker.start().catch((error: unknown) => {
     console.warn("Hourleaf usage tracking could not start", error);
   });
+  void refreshActiveToolbarBadges();
   void modulesReady
     .then((store) =>
       managedSites.rebuildRegistrations(
@@ -91,6 +152,9 @@ if (api) {
   void localModulesReady.catch((error: unknown) => {
     console.warn("Hourleaf could not rebuild local module registrations", error);
   });
+  void planRegistration.reconcile().catch((error: unknown) => {
+    console.warn("Hourleaf could not rebuild the active plan registration", error);
+  });
 }
 
 export async function handleMessage(
@@ -101,24 +165,34 @@ export async function handleMessage(
     case "GET_SETTINGS":
       return settings.get();
     case "UPDATE_SETTINGS":
+      assertExtensionPageSender(sender);
       assertSettingsPatch(message.patch);
-      return settings.update(message.patch);
+      return withPlanRegistrationReconcile(settings.update(message.patch));
     case "RESET_SETTINGS":
+      assertExtensionPageSender(sender);
       for (const siteId of Object.keys((await managedSites.list()).sites)) {
         await managedSites.remove(siteId);
       }
-      return settings.reset();
+      return withPlanRegistrationReconcile(settings.reset());
     case "GET_USAGE":
+      assertExtensionPageSender(sender);
       assertPeriod(message.period);
       await tracker.flush();
       return analytics.summarize(message.period, parseLocalDate(message.anchorDate) ?? new Date());
     case "CLEAR_USAGE":
+      assertExtensionPageSender(sender);
       await analytics.clear();
       return { cleared: true as const };
-    case "GET_PAGE_DECISION":
+    case "GET_PAGE_DECISION": {
       assertUrl(message.url);
-      await assertAuthorizedConfiguredUrl(message.url, message.targetId, sender);
-      return decideEffectiveFocus(message.url, new Date(), message.targetId);
+      const isWebsiteRequest = Boolean(sender?.tab && !isExtensionPageSender(sender));
+      const resolved = isWebsiteRequest
+        ? await assertAuthorizedConfiguredUrl(message.url, message.targetId, sender)
+        : await managedSites.resolve(message.url, message.targetId);
+      if (!isWebsiteRequest) assertExtensionPageSender(sender);
+      const decision = await decideEffectiveFocus(message.url, new Date(), message.targetId);
+      return resolved ? applyVisitConfirmation(decision, resolved.site, sender) : decision;
+    }
     case "GRANT_TEMPORARY_ACCESS":
       assertUrl(message.url);
       await assertAuthorizedConfiguredUrl(message.url, message.targetId, sender);
@@ -126,6 +200,55 @@ export async function handleMessage(
         return decideEffectiveFocus(message.url, new Date(), message.targetId);
       }
       return focus.grant(message.url, new Date(), message.targetId);
+    case "GRANT_VISIT_CONFIRMATION": {
+      assertExtensionPageSender(sender);
+      assertUrl(message.url);
+      const tabId = requireSenderTabId(sender);
+      const resolved = await assertAuthorizedConfiguredUrl(message.url, undefined, sender);
+      if (
+        resolved.site.id !== message.siteId ||
+        resolved.site.origin !== new URL(message.url).origin
+      ) {
+        throw new Error("The website confirmation no longer matches this tab");
+      }
+      const policy = resolved.site.visitConfirmation ?? { enabled: false, waitSeconds: 3 };
+      if (!policy.enabled) throw new Error("Visit confirmation is no longer enabled");
+      await visitConfirmations.grant(
+        tabId,
+        resolved.site.id,
+        resolved.site.origin,
+        resolved.site.updatedAt,
+        policy.waitSeconds
+      );
+      return { granted: true as const, url: message.url };
+    }
+    case "GET_PERIOD_RUNTIME":
+      assertExtensionPageSender(sender);
+      return periodRuntime.getStatus(message.targetId, message.periodId);
+    case "START_PERIOD_GROUP_WAIT":
+      assertExtensionPageSender(sender);
+      return periodRuntime.startWait(message.targetId, message.periodId);
+    case "UNLOCK_PERIOD_GROUP":
+      assertExtensionPageSender(sender);
+      return periodRuntime.unlock(message.targetId, message.periodId, message.proof);
+    case "GRANT_PERIOD_FLOW": {
+      assertUrl(message.url);
+      const resolved = await assertAuthorizedConfiguredUrl(message.url, message.targetId, sender);
+      if (!resolved.target.timePeriods.some((period) => period.id === message.periodId)) {
+        throw new Error("The configured time period no longer exists");
+      }
+      await periodRuntime.grantFlow(resolved.target.id, message.periodId, message.continuation);
+      return decideEffectiveFocus(message.url, new Date(), resolved.target.id);
+    }
+    case "STOP_PERIOD_FLOW": {
+      assertUrl(message.url);
+      const resolved = await assertAuthorizedConfiguredUrl(message.url, message.targetId, sender);
+      if (!resolved.target.timePeriods.some((period) => period.id === message.periodId)) {
+        throw new Error("The configured time period no longer exists");
+      }
+      await periodRuntime.revokeFlow(resolved.target.id, message.periodId);
+      return decideEffectiveFocus(message.url, new Date(), resolved.target.id);
+    }
     case "GET_MANAGED_SITES":
       assertExtensionPageSender(sender);
       return managedSites.list();
@@ -152,20 +275,7 @@ export async function handleMessage(
     }
     case "UPDATE_MANAGED_SITE": {
       assertExtensionPageSender(sender);
-      const updated = await managedSites.updateSite(message.siteId, message.patch);
-      if (updated.enabled) {
-        const store = await modulesReady;
-        for (const definition of PREINSTALLED_SITE_MODULES) {
-          if (store.installations[definition.manifest.id]?.enabled) {
-            await managedSites.applyModuleManifest(
-              definition.manifest,
-              true,
-              definition.contentScript
-            );
-          }
-        }
-      }
-      return updated;
+      return managedSites.updateSite(message.siteId, message.patch);
     }
     case "UPDATE_SITE_TARGET":
       assertExtensionPageSender(sender);
@@ -233,24 +343,32 @@ export async function handleMessage(
       return tracker.getStatus();
     case "GET_PLAN_STATE":
       assertExtensionPageSender(sender);
-      return plan.getState();
+      return withPlanRegistrationReconcile(plan.getState());
     case "SET_PLAN_MODE":
       assertExtensionPageSender(sender);
-      return plan.setMode({
-        ...(message.enabled !== undefined ? { enabled: message.enabled } : {}),
-        ...(message.watchDurationMinutes !== undefined
-          ? { watchDurationMinutes: message.watchDurationMinutes }
-          : {})
-      });
+      return withPlanRegistrationReconcile(
+        plan.setMode({
+          ...(message.enabled !== undefined ? { enabled: message.enabled } : {}),
+          ...(message.watchDurationMinutes !== undefined
+            ? { watchDurationMinutes: message.watchDurationMinutes }
+            : {}),
+          ...(message.defaultCompletionMode !== undefined
+            ? { defaultCompletionMode: message.defaultCompletionMode }
+            : {}),
+          ...(message.autoCompleteOnStart !== undefined
+            ? { autoCompleteOnStart: message.autoCompleteOnStart }
+            : {})
+        })
+      );
     case "ADD_PLAN_ITEM":
       assertExtensionPageSender(sender);
       return plan.add(message);
     case "UPDATE_PLAN_ITEM":
       assertExtensionPageSender(sender);
-      return plan.update(message.id, message.patch);
+      return withPlanRegistrationReconcile(plan.update(message.id, message.patch));
     case "DELETE_PLAN_ITEM":
       assertExtensionPageSender(sender);
-      return plan.remove(message.id);
+      return withPlanRegistrationReconcile(plan.remove(message.id));
     case "MOVE_PLAN_ITEM":
       assertExtensionPageSender(sender);
       return plan.move(message.id, message.direction);
@@ -259,22 +377,58 @@ export async function handleMessage(
       return plan.reorder(message.orderedIds);
     case "SET_PLAN_ITEM_COMPLETED":
       assertExtensionPageSender(sender);
-      return plan.setCompleted(message.id, message.completed);
-    case "START_PLAN_ITEM":
+      return withPlanRegistrationReconcile(plan.setCompleted(message.id, message.completed));
+    case "START_PLAN_ITEM": {
       assertExtensionPageSender(sender);
-      return plan.start(message.id);
-    case "GET_PLAN_NAVIGATION_DECISION":
-      if (sender?.tab) {
+      await planRegistration.prepareForStart(message.id);
+      return withPlanRegistrationReconcile(plan.start(message.id));
+    }
+    case "GET_PLAN_NAVIGATION_DECISION": {
+      if (sender?.tab && !isExtensionPageSender(sender)) {
         if (!message.url) throw new Error("Website plan checks require their current URL");
-        await assertAuthorizedConfiguredUrl(message.url, undefined, sender);
+        await planRegistration.assertAuthorizedWebsiteUrl(message.url, sender);
+      } else if (sender) {
+        assertExtensionPageSender(sender);
       }
-      return plan.decideNavigation(message.url, message.bvid);
+      return withPlanRegistrationReconcile(plan.decideNavigation(message.url, message.bvid));
+    }
+    case "CONTINUE_PLAN_FLOW":
+      if (sender?.tab && !isExtensionPageSender(sender)) {
+        if (!message.url) throw new Error("Website flow decisions require their current URL");
+        await planRegistration.assertAuthorizedWebsiteUrl(message.url, sender);
+      } else {
+        assertExtensionPageSender(sender);
+      }
+      return withPlanRegistrationReconcile(
+        plan.continueFlow(message.itemId, message.continuation, message.url)
+      );
+    case "STOP_PLAN_FLOW":
+      if (sender?.tab && !isExtensionPageSender(sender)) {
+        if (!message.url) throw new Error("Website flow stops require their current URL");
+        await planRegistration.assertAuthorizedWebsiteUrl(message.url, sender);
+      } else {
+        assertExtensionPageSender(sender);
+      }
+      return withPlanRegistrationReconcile(plan.revokeFlow(message.itemId, message.url));
     case "IMPORT_PLAN_ITEMS":
       assertExtensionPageSender(sender);
       return plan.importItems(message.items, message.source);
     case "SESSION_UPDATE": {
       if (!sender?.tab) throw new Error("Session updates require a website tab");
       const resolved = await assertAuthorizedConfiguredUrl(message.url, message.targetId, sender);
+      const confirmation = resolved.site.visitConfirmation;
+      if (
+        confirmation?.enabled &&
+        sender.tab.id !== undefined &&
+        !(await visitConfirmations.isGranted(
+          sender.tab.id,
+          resolved.site.id,
+          resolved.site.origin,
+          resolved.site.updatedAt
+        ))
+      ) {
+        return { accepted: false };
+      }
       return {
         accepted: tracker.handleSessionUpdate(
           sender.tab,
@@ -289,6 +443,49 @@ export async function handleMessage(
     default:
       return assertNever(message);
   }
+}
+
+async function applyVisitConfirmation(
+  decision: PageDecision,
+  site: Awaited<ReturnType<typeof assertAuthorizedConfiguredUrl>>["site"],
+  sender?: ExtensionMessageSender
+): Promise<PageDecision> {
+  const policy = site.visitConfirmation;
+  const tabId = sender?.tab?.id;
+  if (
+    decision.blocked ||
+    !policy?.enabled ||
+    tabId === undefined ||
+    (sender !== undefined && isExtensionPageSender(sender))
+  ) {
+    return decision;
+  }
+  if (await visitConfirmations.isGranted(tabId, site.id, site.origin, site.updatedAt)) {
+    return decision;
+  }
+  const waitSeconds = await visitConfirmations.requireConfirmation(
+    tabId,
+    site.id,
+    site.origin,
+    site.updatedAt,
+    policy.waitSeconds
+  );
+  return {
+    ...decision,
+    blocked: true,
+    reason: "visit-confirmation",
+    needsVisitConfirmation: true,
+    visitConfirmationWaitSeconds: waitSeconds,
+    canRequestTemporaryAccess: false
+  };
+}
+
+function requireSenderTabId(sender?: ExtensionMessageSender): number {
+  const tabId = sender?.tab?.id;
+  if (!Number.isInteger(tabId) || (tabId as number) < 0) {
+    throw new Error("Visit confirmation requires a browser tab");
+  }
+  return tabId as number;
 }
 
 async function decideEffectiveFocus(
@@ -323,6 +520,55 @@ async function decideEffectiveFocus(
     };
   }
   return base;
+}
+
+let toolbarBadgeRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleToolbarBadgeRefresh(): void {
+  if (toolbarBadgeRefreshTimer !== null) return;
+  toolbarBadgeRefreshTimer = setTimeout(() => {
+    toolbarBadgeRefreshTimer = null;
+    void refreshActiveToolbarBadges();
+  }, 200);
+}
+
+async function refreshActiveToolbarBadges(): Promise<void> {
+  const tabs = await tabsQuery({ active: true }).catch(() => []);
+  await Promise.all(tabs.map((tab) => refreshToolbarBadgeForTab(tab)));
+}
+
+async function refreshToolbarBadgeForTab(tab: ExtensionTab): Promise<void> {
+  if (tab.id === undefined) return;
+  try {
+    const currentSettings = await settings.get();
+    if (!currentSettings.enabled || !currentSettings.showRemainingMinutesOnIcon || !tab.url) {
+      await actionSetBadgeText("", tab.id);
+      return;
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(tab.url);
+    } catch {
+      await actionSetBadgeText("", tab.id);
+      return;
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      await actionSetBadgeText("", tab.id);
+      return;
+    }
+    const [usage, decision] = await Promise.all([
+      analytics.summarize("day", new Date()),
+      decideEffectiveFocus(parsed.href, new Date())
+    ]);
+    const text = resolveToolbarBadgeText(currentSettings, usage, decision);
+    await Promise.all([
+      actionSetBadgeBackgroundColor("#2f8065", tab.id),
+      actionSetBadgeTextColor("#ffffff", tab.id)
+    ]);
+    await actionSetBadgeText(text, tab.id);
+  } catch {
+    await actionSetBadgeText("", tab.id).catch(() => undefined);
+  }
 }
 
 async function initializeBundledModules() {
@@ -367,7 +613,11 @@ async function assertAuthorizedConfiguredUrl(
   sender?: ExtensionMessageSender
 ) {
   const senderUrl = sender?.url ?? sender?.tab?.url;
-  if (sender?.tab && (!senderUrl || !sameOrigin(senderUrl, url))) {
+  if (
+    sender?.tab &&
+    !isExtensionPageSender(sender) &&
+    (!senderUrl || !sameOrigin(senderUrl, url))
+  ) {
     throw new Error("Website messages cannot cross origins");
   }
   const resolved = await managedSites.resolve(url, targetId, true);
@@ -384,6 +634,22 @@ function assertPeriod(period: unknown): asserts period is UsagePeriod {
 function assertSettingsPatch(value: unknown): asserts value is DeepPartial<FocusSettings> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new Error("Invalid settings patch");
+  }
+}
+
+async function withPlanRegistrationReconcile<T>(operation: Promise<T>): Promise<T> {
+  try {
+    return await operation;
+  } finally {
+    await reconcilePlanRegistration();
+  }
+}
+
+async function reconcilePlanRegistration(): Promise<void> {
+  try {
+    await planRegistration.reconcile();
+  } catch (error) {
+    console.warn("Hourleaf could not reconcile the active plan registration", error);
   }
 }
 

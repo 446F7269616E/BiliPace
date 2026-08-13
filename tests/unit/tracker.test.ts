@@ -11,7 +11,7 @@ describe("usage tracker", () => {
       () => now,
       null,
       () => true,
-      () => ({ targetId: "target:test" })
+      () => ({ targetId: "target:test", activePeriodId: "period:focus" })
     );
     const tab = {
       id: 7,
@@ -25,7 +25,7 @@ describe("usage tracker", () => {
     await tracker.flush();
     await tracker.flush();
     expect(recordInterval).toHaveBeenCalledTimes(1);
-    expect(recordInterval).toHaveBeenCalledWith("target:test", 0, 15_000);
+    expect(recordInterval).toHaveBeenCalledWith("target:test", 0, 15_000, "period:focus");
 
     now = 20_000;
     tracker.handleSessionUpdate(tab, "heartbeat", "session-123", tab.url, "hidden");
@@ -33,7 +33,7 @@ describe("usage tracker", () => {
     now = 35_000;
     await tracker.flush();
     expect(recordInterval).toHaveBeenCalledTimes(2);
-    expect(recordInterval).toHaveBeenLastCalledWith("target:test", 15_000, 20_000);
+    expect(recordInterval).toHaveBeenLastCalledWith("target:test", 15_000, 20_000, "period:focus");
   });
 
   it("rejects stale events from a replaced session", () => {

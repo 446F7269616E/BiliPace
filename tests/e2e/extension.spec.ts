@@ -35,13 +35,9 @@ test("packaged manifest stays inside the reviewed permission budget", () => {
     ])
   );
   expect(manifest.permissions).toEqual(
-    expect.arrayContaining([
-      "storage",
-      "scripting",
-      "declarativeNetRequestWithHostAccess",
-      "userScripts"
-    ])
+    expect.arrayContaining(["storage", "idle", "scripting", "userScripts", "activeTab"])
   );
+  expect(manifest.permissions).not.toContain("declarativeNetRequestWithHostAccess");
   expect(manifest.host_permissions ?? []).toEqual([]);
   expect([...(manifest.optional_host_permissions ?? [])].sort()).toEqual([
     "http://*/*",
@@ -49,7 +45,7 @@ test("packaged manifest stays inside the reviewed permission budget", () => {
   ]);
   expect(manifest.content_scripts).toBeUndefined();
   expect(manifest.web_accessible_resources).toEqual([
-    { resources: ["plan.html"], matches: ["http://*/*", "https://*/*"] }
+    { resources: ["plan.html", "end.html"], matches: ["http://*/*", "https://*/*"] }
   ]);
   expect(manifest.content_security_policy?.extension_pages).toContain("script-src 'self'");
   expect(manifest.content_security_policy?.extension_pages).not.toMatch(/https?:|unsafe-eval/);
@@ -62,7 +58,8 @@ for (const [fileName, title] of [
   ["dashboard.html", "仪表盘 · Hourleaf"],
   ["plan.html", "计划 · Hourleaf"],
   ["options.html", "配置 · Hourleaf"],
-  ["home.html", "设置 · Hourleaf"]
+  ["home.html", "设置 · Hourleaf"],
+  ["end.html", "本次访问已结束 · Hourleaf"]
 ] as const) {
   test(`${fileName} loads as a real MV3 extension page`, async ({ openExtensionPage }) => {
     const page = await openExtensionPage(fileName);
@@ -102,18 +99,10 @@ test("popup exposes the current-site time summary and receives a background resp
   await expect(page.getByRole("checkbox")).toHaveCount(0);
 });
 
-test("plan starts the explicitly selected website", async ({
-  extensionContext,
+test("plan requests access only for the explicitly selected website", async ({
   openExtensionPage
 }) => {
   const plannedUrl = "https://example.test/focus";
-  await extensionContext.route("https://example.test/**", async (route) => {
-    await route.fulfill({
-      contentType: "text/html",
-      body: '<!doctype html><html><body><h1 data-testid="planned-page">Planned page</h1></body></html>'
-    });
-  });
-
   const planPage = await openExtensionPage("plan.html");
   await expect(planPage.getByTestId("plan-mode-toggle")).toHaveCount(0);
   await planPage.getByTestId("plan-add-open").click();
@@ -123,9 +112,11 @@ test("plan starts the explicitly selected website", async ({
 
   const start = planPage.locator('[data-testid^="plan-start-"]').first();
   await expect(start).toBeVisible();
+  await expect(start).toHaveText("开始");
   await start.click();
-  await expect(planPage).toHaveURL(plannedUrl);
-  await expect(planPage.getByTestId("planned-page")).toBeVisible();
+  await expect(start).toHaveText("请求网站权限…");
+  await expect(start).toBeDisabled();
+  await expect(planPage).toHaveURL(/plan\.html$/u);
 });
 
 test("configuration handles a new profile with no websites", async ({ openExtensionPage }) => {

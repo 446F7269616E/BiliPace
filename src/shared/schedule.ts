@@ -5,6 +5,7 @@ import type {
   TimeAccessEffect,
   TimeAccessRule,
   TimeOfDay,
+  TimePeriodSettings,
   Weekday
 } from "./types";
 
@@ -54,6 +55,21 @@ export interface TimeRuleDecision {
   reason: "focus-disabled" | "rule-disabled" | "outside-schedule" | "blocked";
 }
 
+export interface TimePeriodDecision {
+  blocked: boolean;
+  reason:
+    | "focus-disabled"
+    | "rule-disabled"
+    | "outside-schedule"
+    | "blocked"
+    | "period-limit"
+    | "group-boundary";
+  activePeriod?: TimePeriodSettings;
+  groupIndex?: number;
+  groupCount?: number;
+  groupBoundary?: boolean;
+}
+
 export function timeToMinutes(time: string): number | null {
   const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(time);
   if (!match) return null;
@@ -80,6 +96,88 @@ export function isScheduleActive(schedule: TimeAccessRule, now = new Date()): bo
 
   const previousWeekday = (weekday + 6) % 7;
   return (selected(weekday) && minute >= start) || (selected(previousWeekday) && minute < end);
+}
+
+export function isTimePeriodActive(period: TimePeriodSettings, now = new Date()): boolean {
+  return isScheduleActive(
+    {
+      id: period.id,
+      name: period.name,
+      enabled: period.enabled,
+      effect: "allow",
+      days: period.days,
+      startTime: period.startTime,
+      endTime: period.endTime
+    },
+    now
+  );
+}
+
+/** Resolves overlaps with the same priority used by enforcement. */
+export function selectActiveTimePeriod(
+  target: SiteTargetSettings,
+  now = new Date()
+): TimePeriodSettings | undefined {
+  const active = target.timePeriods.filter((period) => isTimePeriodActive(period, now));
+  return (
+    active.find((period) => period.behavior === "always-allow") ??
+    active.find((period) => period.behavior === "always-block") ??
+    active.find((period) => period.behavior === "timed")
+  );
+}
+
+/** Canonical schema-v4 evaluation. Overlaps resolve allow > block > timed. */
+export function evaluateTimePeriods(
+  focusEnabled: boolean,
+  target: SiteTargetSettings,
+  now = new Date(),
+  usageByPeriod: Readonly<Record<string, number>> = {},
+  unlockedGroups = 1,
+  groupUnlockRequired = true
+): TimePeriodDecision {
+  if (!focusEnabled) return { blocked: false, reason: "focus-disabled" };
+  const selected = selectActiveTimePeriod(target, now);
+  const allowed = selected?.behavior === "always-allow" ? selected : undefined;
+  if (allowed) return { blocked: false, reason: "outside-schedule", activePeriod: allowed };
+  const denied = selected?.behavior === "always-block" ? selected : undefined;
+  if (denied) return { blocked: true, reason: "blocked", activePeriod: denied };
+  const timed = selected?.behavior === "timed" ? selected : undefined;
+  if (!timed) return { blocked: true, reason: "blocked" };
+  if (timed.limitMinutes === null) {
+    return { blocked: false, reason: "outside-schedule", activePeriod: timed };
+  }
+  const usedSeconds = Math.max(0, usageByPeriod[timed.id] ?? 0);
+  const groupCount = Math.max(1, timed.groupCount);
+  const totalSeconds = timed.limitMinutes * 60;
+  if (usedSeconds >= totalSeconds) {
+    return {
+      blocked: true,
+      reason: "period-limit",
+      activePeriod: timed,
+      groupIndex: groupCount,
+      groupCount
+    };
+  }
+  const groupSeconds = totalSeconds / groupCount;
+  const reachedGroup = Math.min(groupCount, Math.floor(usedSeconds / groupSeconds) + 1);
+  const availableGroups = Math.min(groupCount, Math.max(1, unlockedGroups));
+  if (groupUnlockRequired && reachedGroup > availableGroups) {
+    return {
+      blocked: true,
+      reason: "group-boundary",
+      activePeriod: timed,
+      groupIndex: availableGroups,
+      groupCount,
+      groupBoundary: true
+    };
+  }
+  return {
+    blocked: false,
+    reason: "outside-schedule",
+    activePeriod: timed,
+    groupIndex: reachedGroup,
+    groupCount
+  };
 }
 
 export function shouldBlockSection(
@@ -125,9 +223,6 @@ export function shouldBlockTarget(
 ): TimeRuleDecision {
   if (!focusEnabled) {
     return { blocked: false, explicit: false, reason: "focus-disabled" };
-  }
-  if (!target.enabled) {
-    return { blocked: false, explicit: false, reason: "rule-disabled" };
   }
 
   const enabledRules = target.schedules.filter((schedule) => schedule.enabled);

@@ -5,7 +5,7 @@ import {
   scriptingRegisterContentScript,
   scriptingUnregisterContentScripts
 } from "../shared/browser";
-import { isStableId } from "../shared/config";
+import { createDefaultTimePeriod, isStableId } from "../shared/config";
 import { SettingsRepository } from "../shared/storage";
 import type {
   FocusSettings,
@@ -53,19 +53,6 @@ export class ManagedSiteService {
     const granted = await permissionsContains([matchPattern]).catch(() => false);
     if (!granted) return { granted: false, origin: parsed.origin };
 
-    const current = await this.settings.get();
-    const existing = Object.values(current.sites).find((site) => site.origin === parsed.origin);
-    if (existing) {
-      const target = current.targets[existing.targetIds[0] ?? ""];
-      await this.ensureRegistration(existing);
-      return {
-        granted: true,
-        origin: parsed.origin,
-        site: existing,
-        ...(target ? { target } : {})
-      };
-    }
-
     const siteId = createOpaqueId("site");
     const targetId = createOpaqueId("target");
     const cleanLabel = normalizeLabel(label, parsed.hostname);
@@ -75,6 +62,8 @@ export class ManagedSiteService {
       hostname: parsed.hostname,
       label: cleanLabel,
       enabled: true,
+      restrictionMode: "strict",
+      visitConfirmation: { enabled: false, waitSeconds: 3 },
       targetIds: [targetId],
       createdAt: now,
       updatedAt: now
@@ -87,34 +76,53 @@ export class ManagedSiteService {
       accessPolicy: "timed",
       dailyLimitMinutes: null,
       schedules: [],
+      timePeriods: [createDefaultTimePeriod()],
       temporaryAccess: { enabled: true, durationMinutes: 5, maxUsesPerDay: 3 }
     };
-    await this.settings.set({
-      ...current,
-      sites: { ...current.sites, [siteId]: site },
-      targets: { ...current.targets, [targetId]: target }
+    const updated = await this.settings.mutate((current) => {
+      if (Object.values(current.sites).some((candidate) => candidate.origin === parsed.origin)) {
+        return;
+      }
+      current.sites[siteId] = site;
+      current.targets[targetId] = target;
     });
-    await this.ensureRegistration(site);
-    return { granted: true, origin: parsed.origin, site, target };
+    const effectiveSite = Object.values(updated.sites).find(
+      (candidate) => candidate.origin === parsed.origin
+    );
+    if (!effectiveSite) throw new Error("Website could not be saved");
+    const effectiveTarget = updated.targets[effectiveSite.targetIds[0] ?? ""];
+    await this.ensureRegistration(effectiveSite);
+    return {
+      granted: true,
+      origin: parsed.origin,
+      site: effectiveSite,
+      ...(effectiveTarget ? { target: effectiveTarget } : {})
+    };
   }
 
   async updateSite(
     siteId: SiteId,
-    patch: { label?: string; enabled?: boolean },
+    patch: {
+      label?: string;
+      restrictionMode?: ManagedSite["restrictionMode"];
+      visitConfirmation?: ManagedSite["visitConfirmation"];
+    },
     now = Date.now()
   ): Promise<ManagedSite> {
-    const current = await this.settings.get();
-    const site = current.sites[siteId];
-    if (!site) throw new Error("Website is not configured");
-    const updated: ManagedSite = {
-      ...site,
-      ...(patch.label !== undefined ? { label: normalizeLabel(patch.label, site.hostname) } : {}),
-      ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
-      updatedAt: now
-    };
-    await this.settings.set({ ...current, sites: { ...current.sites, [siteId]: updated } });
-    if (updated.enabled) await this.ensureRegistration(updated);
-    else await this.unregisterSiteRegistrations(site);
+    const normalized = await this.settings.mutate((current) => {
+      const site = current.sites[siteId];
+      if (!site) throw new Error("Website is not configured");
+      current.sites[siteId] = {
+        ...site,
+        ...(patch.label !== undefined ? { label: normalizeLabel(patch.label, site.hostname) } : {}),
+        enabled: true,
+        ...(patch.restrictionMode ? { restrictionMode: patch.restrictionMode } : {}),
+        ...(patch.visitConfirmation ? { visitConfirmation: { ...patch.visitConfirmation } } : {}),
+        updatedAt: now
+      };
+    });
+    const updated = normalized.sites[siteId];
+    if (!updated) throw new Error("Website is not configured");
     return updated;
   }
 
@@ -123,51 +131,51 @@ export class ManagedSiteService {
     enabled: boolean,
     contentScript?: string
   ): Promise<void> {
-    const current = await this.settings.get();
-    const sites = { ...current.sites };
-    const targets = { ...current.targets };
-    for (const site of Object.values(sites)) {
-      if (!manifest.hosts.some((pattern) => modulePatternMatches(pattern, site.origin))) continue;
-      for (const section of manifest.sections) {
-        if (
-          section.hosts &&
-          !section.hosts.some((pattern) => modulePatternMatches(pattern, site.origin))
-        ) {
-          continue;
+    const updated = await this.settings.mutate((current) => {
+      for (const site of Object.values(current.sites)) {
+        if (!manifest.hosts.some((pattern) => modulePatternMatches(pattern, site.origin))) continue;
+        for (const section of manifest.sections) {
+          if (
+            section.hosts &&
+            !section.hosts.some((pattern) => modulePatternMatches(pattern, site.origin))
+          ) {
+            continue;
+          }
+          const moduleTargetId = section.targetId ?? `${manifest.id}:${section.id}`;
+          const existing = site.targetIds
+            .map((id) => current.targets[id])
+            .find(
+              (candidate) =>
+                candidate?.moduleId === manifest.id && candidate.moduleSectionId === section.id
+            );
+          if (existing) {
+            existing.moduleEnabled = enabled;
+            existing.moduleTargetId = moduleTargetId;
+            continue;
+          }
+          const targetId = moduleSiteTargetId(manifest.id, section.id, site.id);
+          current.targets[targetId] = {
+            id: targetId,
+            siteId: site.id,
+            label: section.label,
+            enabled: true,
+            accessPolicy: "timed",
+            dailyLimitMinutes: null,
+            schedules: [],
+            timePeriods: [createDefaultTimePeriod()],
+            temporaryAccess: { enabled: true, durationMinutes: 5, maxUsesPerDay: 3 },
+            moduleId: manifest.id,
+            moduleSectionId: section.id,
+            moduleTargetId,
+            moduleEnabled: enabled
+          };
+          site.targetIds.push(targetId);
         }
-        const moduleTargetId = section.targetId ?? `${manifest.id}:${section.id}`;
-        const existing = site.targetIds
-          .map((id) => targets[id])
-          .find(
-            (target) => target?.moduleId === manifest.id && target.moduleSectionId === section.id
-          );
-        if (existing) {
-          existing.moduleEnabled = enabled;
-          existing.moduleTargetId = moduleTargetId;
-          continue;
-        }
-        const targetId = moduleSiteTargetId(manifest.id, section.id, site.id);
-        targets[targetId] = {
-          id: targetId,
-          siteId: site.id,
-          label: section.label,
-          enabled,
-          accessPolicy: "timed",
-          dailyLimitMinutes: null,
-          schedules: [],
-          temporaryAccess: { enabled: true, durationMinutes: 5, maxUsesPerDay: 3 },
-          moduleId: manifest.id,
-          moduleSectionId: section.id,
-          moduleTargetId,
-          moduleEnabled: enabled
-        };
-        site.targetIds.push(targetId);
       }
-    }
-    await this.settings.set({ ...current, sites, targets });
-    for (const site of Object.values(sites)) {
+    });
+    for (const site of Object.values(updated.sites)) {
       if (!manifest.hosts.some((pattern) => modulePatternMatches(pattern, site.origin))) continue;
-      if (site.enabled && enabled && contentScript) {
+      if (enabled && contentScript) {
         await this.ensureModuleRegistration(site, manifest.id, contentScript);
       } else {
         await scriptingUnregisterContentScripts([moduleRegistrationId(site.id, manifest.id)]).catch(
@@ -178,25 +186,19 @@ export class ManagedSiteService {
   }
 
   async removeModuleManifest(manifest: SiteModuleManifest): Promise<void> {
-    const current = await this.settings.get();
-    const sites = Object.fromEntries(
-      Object.entries(current.sites).map(([siteId, site]) => [
-        siteId,
-        {
-          ...site,
-          targetIds: site.targetIds.filter(
-            (targetId) => current.targets[targetId]?.moduleId !== manifest.id
-          )
-        }
-      ])
-    );
-    const targets = Object.fromEntries(
-      Object.entries(current.targets).filter(([, target]) => target.moduleId !== manifest.id)
-    );
-    await this.settings.set({ ...current, sites, targets });
+    const updated = await this.settings.mutate((current) => {
+      for (const site of Object.values(current.sites)) {
+        site.targetIds = site.targetIds.filter(
+          (targetId) => current.targets[targetId]?.moduleId !== manifest.id
+        );
+      }
+      for (const [targetId, target] of Object.entries(current.targets)) {
+        if (target.moduleId === manifest.id) delete current.targets[targetId];
+      }
+    });
     const existing = await scriptingGetRegisteredContentScripts().catch(() => []);
     const registeredIds = new Set(existing.map((script) => script.id));
-    const registrationIds = Object.values(current.sites)
+    const registrationIds = Object.values(updated.sites)
       .map((site) => moduleRegistrationId(site.id, manifest.id))
       .filter((id) => registeredIds.has(id));
     if (registrationIds.length > 0) await scriptingUnregisterContentScripts(registrationIds);
@@ -207,45 +209,43 @@ export class ManagedSiteService {
     patch: Partial<
       Pick<
         SiteTargetSettings,
-        "label" | "enabled" | "accessPolicy" | "dailyLimitMinutes" | "schedules" | "temporaryAccess"
+        | "label"
+        | "enabled"
+        | "accessPolicy"
+        | "dailyLimitMinutes"
+        | "schedules"
+        | "timePeriods"
+        | "temporaryAccess"
       >
     >
   ): Promise<SiteTargetSettings> {
-    const current = await this.settings.get();
-    const target = current.targets[targetId];
-    if (!target) throw new Error("Website target is not configured");
-    const normalized = await this.settings.set({
-      ...current,
-      targets: {
-        ...current.targets,
-        [targetId]: {
-          ...target,
-          ...patch,
-          temporaryAccess: { ...target.temporaryAccess, ...(patch.temporaryAccess ?? {}) }
-        }
-      }
+    const normalized = await this.settings.mutate((current) => {
+      const target = current.targets[targetId];
+      if (!target) throw new Error("Website target is not configured");
+      current.targets[targetId] = { ...target, ...patch };
     });
     const updated = normalized.targets[targetId];
-    if (!updated) throw new Error("Website target update was rejected");
+    if (!updated) throw new Error("Website target is not configured");
     return updated;
   }
 
   async remove(siteId: SiteId): Promise<{ removed: true; permissionRemoved: boolean }> {
-    const current = await this.settings.get();
-    const site = current.sites[siteId];
+    let site: ManagedSite | undefined;
+    const updated = await this.settings.mutate((current) => {
+      site = current.sites[siteId];
+      if (!site) throw new Error("Website is not configured");
+      delete current.sites[siteId];
+      for (const targetId of site.targetIds) delete current.targets[targetId];
+    });
     if (!site) throw new Error("Website is not configured");
-    const sites = { ...current.sites };
-    const targets = { ...current.targets };
-    delete sites[siteId];
-    for (const targetId of site.targetIds) delete targets[targetId];
-    await this.settings.set({ ...current, sites, targets });
-    await this.unregisterSiteRegistrations(site);
-    const originStillUsed = Object.values(sites).some(
-      (candidate) => candidate.origin === site.origin
+    const removedSite = site;
+    await this.unregisterSiteRegistrations(removedSite);
+    const originStillUsed = Object.values(updated.sites).some(
+      (candidate) => candidate.origin === removedSite.origin
     );
     const permissionRemoved = originStillUsed
       ? false
-      : await permissionsRemove([originMatchPattern(site.origin)]);
+      : await permissionsRemove([originMatchPattern(removedSite.origin)]);
     return { removed: true, permissionRemoved };
   }
 
@@ -260,7 +260,7 @@ export class ManagedSiteService {
     const site = Object.values(current.sites).find(
       (candidate) => candidate.origin === parsed.origin
     );
-    if (!site || !site.enabled) return null;
+    if (!site) return null;
     const directTargetId = requestedTargetId ?? site.targetIds[0];
     if (!directTargetId || !isStableId(directTargetId)) return null;
     const target = site.targetIds
@@ -293,7 +293,6 @@ export class ManagedSiteService {
 
     const { sites } = await this.settings.get();
     for (const site of Object.values(sites)) {
-      if (!site.enabled) continue;
       const granted = await permissionsContains([originMatchPattern(site.origin)]).catch(
         () => false
       );

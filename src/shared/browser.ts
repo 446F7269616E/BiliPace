@@ -53,9 +53,21 @@ export interface ExtensionApi {
   storage: {
     local: StorageAreaLike;
     sync?: StorageAreaLike;
+    session?: StorageAreaLike;
     onChanged?: ExtensionEvent<
       (changes: Record<string, StorageChangeLike>, areaName: string) => void
     >;
+  };
+  action?: {
+    setBadgeText(details: { text: string; tabId?: number }, callback?: () => void): unknown;
+    setBadgeBackgroundColor(
+      details: { color: string | number[]; tabId?: number },
+      callback?: () => void
+    ): unknown;
+    setBadgeTextColor?(
+      details: { color: string | number[]; tabId?: number },
+      callback?: () => void
+    ): unknown;
   };
   tabs?: {
     query(queryInfo: Record<string, unknown>, callback?: (tabs: ExtensionTab[]) => void): unknown;
@@ -167,6 +179,11 @@ export function getLocalStorageArea(): StorageAreaLike {
   return requireApi().storage.local;
 }
 
+/** Session storage survives MV3 worker suspension but is cleared with the browser session. */
+export function getSessionStorageArea(): StorageAreaLike | null {
+  return getApiContext()?.api.storage.session ?? null;
+}
+
 export async function storageGet(
   area: StorageAreaLike,
   keys?: string | string[] | Record<string, unknown> | null
@@ -269,6 +286,70 @@ export async function tabsGet(tabId: number): Promise<ExtensionTab | null> {
   if (!tabs?.get) return null;
   if (context.mode === "promise") return (await tabs.get(tabId)) as ExtensionTab;
   return callbackResult<ExtensionTab>((resolve) => tabs.get?.(tabId, resolve));
+}
+
+export function tabsAddActivatedListener(
+  listener: (activeInfo: { tabId: number; windowId: number }) => void
+): () => void {
+  const event = requireContext().api.tabs?.onActivated;
+  if (!event) return () => undefined;
+  event.addListener(listener);
+  return () => event.removeListener?.(listener);
+}
+
+export function tabsAddUpdatedListener(
+  listener: (
+    tabId: number,
+    changeInfo: { url?: string; status?: string },
+    tab: ExtensionTab
+  ) => void
+): () => void {
+  const event = requireContext().api.tabs?.onUpdated;
+  if (!event) return () => undefined;
+  event.addListener(listener);
+  return () => event.removeListener?.(listener);
+}
+
+export async function actionSetBadgeText(text: string, tabId?: number): Promise<void> {
+  const context = requireContext();
+  const action = context.api.action;
+  if (!action) return;
+  const details = { text, ...(tabId === undefined ? {} : { tabId }) };
+  if (context.mode === "promise") {
+    await action.setBadgeText(details);
+    return;
+  }
+  await callbackVoid((resolve) => action.setBadgeText(details, resolve));
+}
+
+export async function actionSetBadgeBackgroundColor(
+  color: string | number[],
+  tabId?: number
+): Promise<void> {
+  const context = requireContext();
+  const action = context.api.action;
+  if (!action) return;
+  const details = { color, ...(tabId === undefined ? {} : { tabId }) };
+  if (context.mode === "promise") {
+    await action.setBadgeBackgroundColor(details);
+    return;
+  }
+  await callbackVoid((resolve) => action.setBadgeBackgroundColor(details, resolve));
+}
+
+export async function actionSetBadgeTextColor(
+  color: string | number[],
+  tabId?: number
+): Promise<void> {
+  const context = requireContext();
+  const action = context.api.action;
+  if (!action?.setBadgeTextColor) return;
+  const details = { color, ...(tabId === undefined ? {} : { tabId }) };
+  if (context.mode === "promise") {
+    await action.setBadgeTextColor(details);
+    return;
+  }
+  await callbackVoid((resolve) => action.setBadgeTextColor?.(details, resolve));
 }
 
 export async function idleQueryState(

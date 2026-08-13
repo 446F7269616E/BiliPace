@@ -78,6 +78,27 @@ export type Weekday = 0 | 1 | 2 | 3 | 4 | 5 | 6;
 /** 24-hour local time in HH:mm format. */
 export type TimeOfDay = string;
 
+export const RESTRICTION_MODES = ["lenient", "flow", "strict"] as const;
+export type RestrictionMode = (typeof RESTRICTION_MODES)[number];
+
+export const TIME_PERIOD_BEHAVIORS = ["timed", "always-allow", "always-block"] as const;
+export type TimePeriodBehavior = (typeof TIME_PERIOD_BEHAVIORS)[number];
+
+/** A website target can own multiple independent, local-time allowance periods. */
+export interface TimePeriodSettings {
+  id: string;
+  name: string;
+  enabled: boolean;
+  days: Weekday[];
+  startTime: TimeOfDay;
+  endTime: TimeOfDay;
+  behavior: TimePeriodBehavior;
+  /** Required only for timed periods. */
+  limitMinutes: number | null;
+  /** The timed allowance is divided evenly into this many sequential groups. */
+  groupCount: number;
+}
+
 export const TIME_ACCESS_EFFECTS = ["allow", "block"] as const;
 export type TimeAccessEffect = (typeof TIME_ACCESS_EFFECTS)[number];
 
@@ -106,21 +127,34 @@ export interface ManagedSite {
   origin: string;
   hostname: string;
   label: string;
+  /** @deprecated Compatibility mirror. Website availability is controlled by time periods. */
   enabled: boolean;
+  restrictionMode: RestrictionMode;
+  /** Optional confirmation gate shown before an otherwise allowed visit. */
+  visitConfirmation?: VisitConfirmationSettings;
   targetIds: TargetId[];
   createdAt: number;
   updatedAt: number;
+}
+
+export interface VisitConfirmationSettings {
+  enabled: boolean;
+  /** Independent delay before the user may confirm opening this website. */
+  waitSeconds: number;
 }
 
 export interface SiteTargetSettings {
   id: TargetId;
   siteId: SiteId;
   label: string;
+  /** @deprecated Compatibility mirror. Runtime availability uses each time period's switch. */
   enabled: boolean;
-  /** Direct domain list behavior; omitted legacy values are treated as timed. */
+  /** @deprecated Schema-v4 migration mirror. Runtime availability uses timePeriods only. */
   accessPolicy?: "timed" | "always-allow" | "always-block";
   dailyLimitMinutes: number | null;
   schedules: TimeAccessRule[];
+  /** Canonical schema v4 configuration. Legacy schedules remain migration mirrors. */
+  timePeriods: TimePeriodSettings[];
   temporaryAccess: TemporaryAccessSettings;
   moduleId?: SiteModuleId;
   moduleSectionId?: string;
@@ -139,6 +173,27 @@ export interface PlanModeSettings {
   enabled: boolean;
   /** Minutes granted after explicitly starting the current planned page. */
   watchDurationMinutes: number;
+  /** Default copied into newly-created plan items. */
+  defaultCompletionMode: PlanCompletionMode;
+  autoCompleteOnStart: boolean;
+}
+
+export const PLAN_COMPLETION_MODES = ["lenient", "flow", "strict"] as const;
+export type PlanCompletionMode = (typeof PLAN_COMPLETION_MODES)[number];
+
+export type UiLocalePreference = "system" | "zh-CN" | "en";
+export type EndPageView = "dashboard" | "message" | "minimal";
+export type GroupUnlockMethod = "none" | "wait" | "math" | "password";
+
+export interface EndPageSettings {
+  view: EndPageView;
+  motivationalMessage: string;
+  groupUnlock: {
+    method: GroupUnlockMethod;
+    waitMinutes: number;
+    /** SHA-256 verifier; an empty value means that no password has been configured. */
+    passwordVerifier: string;
+  };
 }
 
 export const CONTENT_FILTER_IDS = [
@@ -181,8 +236,12 @@ export interface LegacySettingsCapsules {
 }
 
 export interface FocusSettings {
-  schemaVersion: 3;
+  schemaVersion: 4;
   enabled: boolean;
+  /** Shows the active website allowance as a per-tab toolbar badge. */
+  showRemainingMinutesOnIcon: boolean;
+  locale: UiLocalePreference;
+  endPage: EndPageSettings;
   sites: Record<SiteId, ManagedSite>;
   targets: Record<TargetId, SiteTargetSettings>;
   legacyCapsules: LegacySettingsCapsules;
@@ -205,12 +264,14 @@ export type DeepPartial<T> = T extends readonly (infer U)[]
 export interface DailyUsage {
   date: string;
   byTarget: Record<TargetId, number>;
+  /** Independent usage totals keyed by stable TimePeriodSettings.id. */
+  byPeriod: Record<string, number>;
   /** @deprecated Derived legacy projection; not persisted in schema v2. */
   bySection: Record<SectionId, number>;
 }
 
 export interface UsageStore {
-  schemaVersion: 2;
+  schemaVersion: 3;
   days: Record<string, DailyUsage>;
 }
 
@@ -222,6 +283,7 @@ export interface UsageSummary {
   endDate: string;
   totalSeconds: number;
   byTarget: Record<TargetId, number>;
+  byPeriod: Record<string, number>;
   /** @deprecated Derived legacy projection for old UI builds. */
   bySection: Record<SectionId, number>;
   byDay: DailyUsage[];
@@ -235,6 +297,38 @@ export interface TemporaryAccessStore {
   expiresAtBySection: Partial<Record<SectionId, number>>;
   /** @deprecated Global legacy counters, retained without adding new writes. */
   usesByDate: Record<string, number>;
+}
+
+export interface PeriodRuntimeEntry {
+  date: string;
+  targetId: TargetId;
+  periodId: string;
+  unlockedGroups: number;
+  waitStartedAt?: number;
+  /** A flow continuation can be granted only once per period and local day. */
+  flowUsed?: boolean;
+  /** Present only for bounded minute continuations; video-end has no timer deadline. */
+  flowExpiresAt?: number;
+  flowContinuationKind?: "minutes" | "video-end";
+}
+
+export interface PeriodRuntimeStore {
+  schemaVersion: 1;
+  entries: Record<string, PeriodRuntimeEntry>;
+}
+
+export interface PeriodRuntimeStatus {
+  date: string;
+  targetId: TargetId;
+  periodId: string;
+  method: GroupUnlockMethod;
+  unlockedGroups: number;
+  groupCount: number;
+  canUnlock: boolean;
+  waitStartedAt?: number;
+  waitEndsAt?: number;
+  mathChallenge?: { left: number; right: number };
+  passwordConfigured?: boolean;
 }
 
 export const PLAN_ITEM_SOURCES = ["manual", "watch-later", "favorite"] as const;
@@ -253,6 +347,8 @@ export interface PlanItem {
   status: PlanItemStatus;
   order: number;
   source: PlanItemSource;
+  scheduledDurationMinutes: number;
+  completionMode: PlanCompletionMode;
   addedAt: number;
   completedAt: number | null;
 }
@@ -263,12 +359,16 @@ interface PlanItemInputMetadata {
 }
 
 /** A user-submitted HTTP(S) URL is required for new generic plan items. */
-export type PlanItemInput = PlanItemInputMetadata &
-  ({ url: string; bvid?: string } | { bvid: string; url?: string });
+export type PlanItemInput = PlanItemInputMetadata & {
+  scheduledDurationMinutes: number;
+  completionMode: PlanCompletionMode;
+} & ({ url: string; bvid?: string } | { bvid: string; url?: string });
 
 export interface PlanItemPatch extends PlanItemInputMetadata {
   url?: string;
   bvid?: string;
+  scheduledDurationMinutes?: number;
+  completionMode?: PlanCompletionMode;
 }
 
 export interface PlanQueueStore {
@@ -283,7 +383,11 @@ export interface PlanWatchGrant {
   /** @deprecated Opaque legacy identity. */
   bvid?: string;
   grantedAt: number;
+  /** Number.MAX_SAFE_INTEGER while a video-end continuation awaits explicit STOP. */
   expiresAt: number;
+  scheduledDurationMinutes: number;
+  completionMode: PlanCompletionMode;
+  flowContinuationKind?: "minutes" | "video-end";
 }
 
 export interface PlanAccessStore {
@@ -301,11 +405,16 @@ export interface PlanNavigationDecision {
   planModeEnabled: boolean;
   allowed: boolean;
   reason: "disabled" | "authorized" | "not-authorized" | "expired" | "not-video";
+  itemId?: string;
   url?: string;
   origin?: string;
   /** @deprecated Opaque legacy identity. */
   bvid?: string;
   expiresAt?: number;
+  expiredAt?: number;
+  completionMode?: PlanCompletionMode;
+  flowDecisionRequired?: boolean;
+  flowContinuationKind?: "minutes" | "video-end";
 }
 
 export interface PageDecision {
@@ -320,10 +429,25 @@ export interface PageDecision {
     | "rule-disabled"
     | "outside-schedule"
     | "daily-limit"
+    | "period-limit"
+    | "group-boundary"
+    | "flow-extension"
+    | "visit-confirmation"
     | "temporary-access"
     | "domain-allow"
     | "domain-block"
     | "blocked";
+  activePeriodId?: string;
+  restrictionMode?: RestrictionMode;
+  groupIndex?: number;
+  groupCount?: number;
+  groupBoundary?: boolean;
+  needsFlowChoice?: boolean;
+  needsReminder?: boolean;
+  needsVisitConfirmation?: boolean;
+  visitConfirmationWaitSeconds?: number;
+  flowContinuationKind?: "minutes" | "video-end";
+  flowExpiresAt?: number;
   temporaryAccessExpiresAt?: number;
   canRequestTemporaryAccess: boolean;
   temporaryAccessUsesRemaining: number;

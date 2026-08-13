@@ -12,7 +12,7 @@
                                │                    │
                      local CSS/selectors      extension pages
 
-local files ─► importer/validator ─► DNR adapter / User Scripts API
+local files ─► importer/validator ─► CSS/selectors / User Scripts API
 
 source/dependencies ─► CI/build ─► store signing/review ─► browser profile
 ```
@@ -25,7 +25,7 @@ source/dependencies ─► CI/build ─► store signing/review ─► browser p
 | -------------------------- | ---------------------- | ---------------------------------------------------------------------- |
 | 可选范围被当成默认全站权限 | 扩大浏览数据暴露       | 只在用户点击后申请精确 origin；撤销后注销 content script               |
 | 远程模块/配置执行          | 绕过商店审核           | 无 URL 安装/自动更新；只读文件选择器；禁止远程 JS/Wasm/eval/指令解释器 |
-| 恶意本地模块扩大主机或能力 | 越权访问               | 精确来源、双重有界校验、显式授权；DNR 发起域由核心生成                 |
+| 恶意本地模块扩大主机或能力 | 越权访问               | 精确来源、双重有界校验、显式授权；拒绝无法保持精确来源边界的 DNR       |
 | 用户脚本取得扩展权限       | 读取设置或操纵浏览器   | 仅 User Scripts API 隔离 world；不导出特权 API；Safari 禁用            |
 | CSS 外联或选择器滥用       | 隐私泄露或页面不可用   | 拒绝远程 import/url；大小/选择器上限；停用与删除路径                   |
 | 网页伪造消息               | 特权操作或泄露         | 验证 sender、origin、permission、消息版本、类型和值域                  |
@@ -38,11 +38,11 @@ source/dependencies ─► CI/build ─► store signing/review ─► browser p
 
 ## 本地模块边界
 
-本地模块可以提供域名策略、有限选择器、自包含 CSS、安全 DNR 和隔离用户脚本，但不能：
+本地模块可以提供域名策略、有限选择器、自包含 CSS 和隔离用户脚本，但不能：
 
 - 调用任意浏览器 API、读取任意 storage key；
 - 读取 Cookie、密码、账号或页面正文并持久化；
-- 添加未声明主机、远程脚本、远程 CSS、任意 HTML 或危险 DNR 动作；
+- 添加未声明主机、远程脚本、远程 CSS、任意 HTML 或非空 DNR 规则；
 - 绕过用户的网站开关、权限、时间规则或计时条件。
 
 User Scripts API 本身允许用户提供任意页面脚本，因此启用前必须展示来源、精确网站范围和能力。核心不承诺第三方脚本安全，只保证它不进入扩展特权世界且可以停用/删除。

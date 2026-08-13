@@ -1,23 +1,18 @@
 {
   "manifest_version": 3,
-  "name": "Hourleaf",
-  "short_name": "Hourleaf",
+  "name": "__MSG_extensionName__",
+  "short_name": "__MSG_extensionShortName__",
   "version": "0.6.0",
-  "description": "按自己的规则管理网站使用时间，减少分心，数据仅保存在本机。",
+  "description": "__MSG_extensionDescription__",
+  "default_locale": "zh_CN",
   "minimum_chrome_version": "120",
-  "permissions": [
-    "storage",
-    "idle",
-    "scripting",
-    "declarativeNetRequestWithHostAccess",
-    "userScripts"
-  ],
+  "permissions": ["storage", "idle", "scripting", "userScripts", "activeTab"],
   "optional_host_permissions": ["http://*/*", "https://*/*"],
   "background": {
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "Hourleaf",
+    "default_title": "__MSG_actionTitle__",
     "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon-16.png",
@@ -36,7 +31,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["plan.html"],
+      "resources": ["plan.html", "end.html"],
       "matches": ["http://*/*", "https://*/*"]
     }
   ],

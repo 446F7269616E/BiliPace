@@ -1,13 +1,14 @@
+import { createDefaultTimePeriod, MAX_TIME_PERIODS } from "../shared/config";
+import { configureLocale, localizeDocumentTitle, t, type MessageKey } from "../shared/i18n";
 import { sendRequest } from "../shared/messages";
-import { MAX_TIME_ACCESS_RULES } from "../shared/config";
-import { createPresetRules, TIME_ACCESS_PRESETS, type TimeAccessPreset } from "../shared/schedule";
-import {
-  type FocusSettings,
-  type ManagedSite,
-  type SiteTargetSettings,
-  type TimeAccessEffect,
-  type TimeAccessRule,
-  type Weekday
+import type {
+  FocusSettings,
+  ManagedSite,
+  RestrictionMode,
+  SiteTargetSettings,
+  TimePeriodBehavior,
+  TimePeriodSettings,
+  Weekday
 } from "../shared/types";
 import {
   assertAppRoot,
@@ -23,49 +24,55 @@ import {
   addManagedSite,
   normalizeWebsiteInput,
   removeManagedSite,
-  requestWebsitePermission,
-  updateManagedSite
+  requestWebsitePermission
 } from "../ui/site-management";
 
-const WEEKDAYS: ReadonlyArray<{ value: Weekday; short: string; label: string }> = [
-  { value: 1, short: "一", label: "星期一" },
-  { value: 2, short: "二", label: "星期二" },
-  { value: 3, short: "三", label: "星期三" },
-  { value: 4, short: "四", label: "星期四" },
-  { value: 5, short: "五", label: "星期五" },
-  { value: 6, short: "六", label: "星期六" },
-  { value: 0, short: "日", label: "星期日" }
+const WEEKDAYS: ReadonlyArray<{
+  value: Weekday;
+  shortKey: MessageKey;
+  labelKey: MessageKey;
+}> = [
+  { value: 1, shortKey: "weekday.mon.short", labelKey: "weekday.mon" },
+  { value: 2, shortKey: "weekday.tue.short", labelKey: "weekday.tue" },
+  { value: 3, shortKey: "weekday.wed.short", labelKey: "weekday.wed" },
+  { value: 4, shortKey: "weekday.thu.short", labelKey: "weekday.thu" },
+  { value: 5, shortKey: "weekday.fri.short", labelKey: "weekday.fri" },
+  { value: 6, shortKey: "weekday.sat.short", labelKey: "weekday.sat" },
+  { value: 0, shortKey: "weekday.sun.short", labelKey: "weekday.sun" }
 ];
 
 const app = assertAppRoot();
 let draft: FocusSettings | null = null;
-let savedSnapshot = "";
-let topSaveButton: HTMLButtonElement | null = null;
-let savebarButton: HTMLButtonElement | null = null;
-let saveState: HTMLElement | null = null;
-let savebar: HTMLElement | null = null;
+let savedConfiguration: Pick<FocusSettings, "sites" | "targets"> | null = null;
 let selectedSiteId: string | null = null;
+let saveState: HTMLElement | null = null;
+let saveStateText: HTMLElement | null = null;
+let autoSaveTimer: number | undefined;
+let saveLoop: Promise<boolean> | null = null;
+let saveStatus: "saved" | "unsaved" | "saving" | "error" = "saved";
+const pendingSiteIds = new Set<string>();
+const pendingTargetIds = new Set<string>();
 
-type RuleOwner = { kind: "target"; id: string; label: string };
-
+configureLocale("system");
 window.addEventListener("beforeunload", (event) => {
-  if (!isDirty()) return;
-  event.preventDefault();
+  if (isDirty()) event.preventDefault();
 });
-
 void loadOptions();
 
 async function loadOptions(preferredOrigin?: string): Promise<void> {
   renderLoading();
   try {
-    draft = cloneSettings(await sendRequest({ type: "GET_SETTINGS" }));
+    draft = clone(await sendRequest({ type: "GET_SETTINGS" }));
+    configureLocale(draft.locale);
+    localizeDocumentTitle("configuration");
     selectedSiteId =
       (preferredOrigin
         ? Object.values(draft.sites).find((site) => site.origin === preferredOrigin)?.id
         : selectedSiteId && draft.sites[selectedSiteId]
           ? selectedSiteId
-          : null) ?? selectInitialSite(draft);
-    savedSnapshot = snapshot(draft);
+          : sortedSites()[0]?.id) ?? null;
+    savedConfiguration = configurationOf(draft);
+    saveStatus = "saved";
     renderOptions();
   } catch (error) {
     renderError(describeError(error));
@@ -76,12 +83,12 @@ function renderLoading(): void {
   app.replaceChildren(
     element("section", {
       className: "state-view",
-      attrs: { "aria-busy": "true", "aria-label": "正在加载配置" },
+      attrs: { "aria-busy": true, "aria-label": t("options.loadingLabel") },
       children: [
         element("div", {
           children: [
-            element("div", { className: "state-view__icon", children: [icon("settings")] }),
-            element("h2", { text: "正在加载配置" })
+            element("div", { className: "state-view__icon", children: [icon("clock")] }),
+            element("h2", { text: t("options.loading") })
           ]
         })
       ]
@@ -92,7 +99,7 @@ function renderLoading(): void {
 function renderError(message: string): void {
   const retry = element("button", {
     className: "btn btn--primary",
-    text: "重新加载",
+    text: t("options.reload"),
     attrs: { type: "button" }
   });
   retry.addEventListener("click", () => void loadOptions());
@@ -104,7 +111,7 @@ function renderError(message: string): void {
         element("div", {
           children: [
             element("div", { className: "state-view__icon", children: [icon("warning")] }),
-            element("h2", { text: "配置加载失败" }),
+            element("h2", { text: t("options.loadFailed") }),
             element("p", { text: message }),
             retry
           ]
@@ -117,102 +124,88 @@ function renderError(message: string): void {
 function renderOptions(): void {
   if (!draft) return;
   document.body.classList.add("options-page");
-  const shell = element("div", { className: "options-shell" });
-  const topbar = createTopbar();
-  const content = element("div", {
-    className: "app-shell",
-    children: [topbar, createPageHeader(), createSettingsContent()]
+  saveStateText = element("span", {
+    attrs: {
+      role: "status",
+      "aria-live": "polite",
+      "aria-label": t("options.autoSaveStatus")
+    }
   });
-  savebar = createSavebar();
-  shell.append(content, savebar);
-  app.replaceChildren(shell);
-  updateDirtyState();
-}
-
-function createTopbar(): HTMLElement {
-  topSaveButton = element("button", {
-    className: "btn btn--primary",
-    attrs: { type: "button", "data-testid": "settings-save" },
-    children: [icon("check"), element("span", { text: "保存设置" })]
-  });
-  topSaveButton.addEventListener(
-    "click",
-    () => void saveSettings(topSaveButton as HTMLButtonElement)
-  );
-  saveState = element("span", {
+  saveState = element("div", {
     className: "save-state",
-    text: "已保存",
-    dataset: { dirty: "false" }
+    attrs: {
+      "data-testid": "auto-save-status"
+    },
+    children: [saveStateText]
   });
+  updateSaveState();
 
-  return createPageNavigation({ currentPage: "options", actions: [saveState, topSaveButton] });
-}
-
-function createPageHeader(): HTMLElement {
-  return element("header", {
-    className: "options-header",
-    children: [
-      element("div", {
+  const site = selectedSiteId ? draft.sites[selectedSiteId] : undefined;
+  const content = site
+    ? element("div", {
+        className: "settings-content options-workspace",
         children: [
-          element("h1", { className: "page-title", text: "配置" }),
-          element("p", { text: "为每个网站分别设置每日限额、可用时段和临时访问。" })
+          createSiteDirectory(),
+          element("div", {
+            className: "options-site-editor",
+            children: [
+              createSiteContext(site),
+              createRestrictionModeCard(site),
+              createTimePeriodWorkspace(site)
+            ]
+          })
         ]
-      }),
-      createAddSiteButton()
-    ]
-  });
-}
-
-function createSettingsContent(): HTMLElement {
-  if (!draft) return element("div");
-  const sites = sortedSites(draft);
-  const site = getSelectedSite();
-  if (!site) {
-    return element("div", {
-      className: "settings-content",
-      children: [
-        element("section", {
-          className: "card options-empty-site",
-          children: [
-            icon("plus"),
-            element("h2", { text: "还没有可配置的网站" }),
-            element("p", { text: "使用页面右上角的“添加网站”设置每日限额和使用时段。" })
-          ]
-        })
-      ]
-    });
-  }
-  return element("div", {
-    className: "settings-content options-workspace",
-    children: [
-      createSiteDirectory(sites),
-      element("div", {
-        className: "options-site-editor",
-        children: [createSiteContextArea(site), createGenericTargetsArea(site)]
       })
+    : createEmptyState();
+
+  app.replaceChildren(
+    element("div", {
+      className: "options-shell app-shell",
+      children: [
+        createPageNavigation({ currentPage: "options", actions: [saveState] }),
+        element("header", {
+          className: "options-header",
+          children: [
+            element("div", {
+              children: [
+                element("h1", { className: "page-title", text: t("options.title") }),
+                element("p", { text: t("options.description") })
+              ]
+            }),
+            createAddSiteButton()
+          ]
+        }),
+        content
+      ]
+    })
+  );
+  updateSaveState();
+}
+
+function createEmptyState(): HTMLElement {
+  return element("section", {
+    className: "card options-empty-site",
+    children: [
+      icon("plus"),
+      element("h2", { text: t("options.emptyTitle") }),
+      element("p", { text: t("options.emptyDescription") })
     ]
   });
 }
 
-function createAddSiteButton(): HTMLButtonElement {
-  const button = element("button", {
-    className: "btn btn--primary",
-    attrs: { type: "button", "data-testid": "site-add-button" },
-    children: [icon("plus"), "添加网站"]
-  });
-  button.addEventListener("click", openAddSiteDialog);
-  return button;
-}
-
-function createSiteDirectory(sites: ManagedSite[]): HTMLElement {
+function createSiteDirectory(): HTMLElement {
+  const sites = sortedSites();
   return element("aside", {
     className: "options-site-directory card",
-    attrs: { "aria-label": "网站时间配置" },
+    attrs: { "aria-label": t("options.siteDirectoryLabel") },
     children: [
       element("header", {
         children: [
-          element("h2", { text: "网站" }),
-          element("span", { className: "status-chip", text: `${sites.length} 个` })
+          element("h2", { text: t("options.sites") }),
+          element("span", {
+            className: "status-chip",
+            text: t("common.itemCount", { count: sites.length })
+          })
         ]
       }),
       element("div", {
@@ -237,10 +230,6 @@ function createSiteDirectory(sites: ManagedSite[]): HTMLElement {
                   element("strong", { text: site.label || site.hostname }),
                   element("small", { text: site.hostname })
                 ]
-              }),
-              element("span", {
-                className: `options-site-directory__state${site.enabled ? " is-enabled" : ""}`,
-                text: site.enabled ? "启用" : "暂停"
               })
             ]
           });
@@ -255,120 +244,309 @@ function createSiteDirectory(sites: ManagedSite[]): HTMLElement {
   });
 }
 
-function createSiteContextArea(site: ManagedSite): HTMLElement {
-  const targets = targetsForSite(site);
-  const moduleIds = [
-    ...new Set(targets.map((target) => target.moduleId).filter(Boolean))
-  ] as string[];
-  const enabledToggle = createToggle(
-    `${site.label || site.hostname}时间规则`,
-    site.enabled,
-    `site-enabled-${site.id}`
-  );
-  enabledToggle.input.addEventListener("change", () => {
-    if (!draft) return;
-    const current = draft.sites[site.id];
-    if (!current) return;
-    current.enabled = enabledToggle.input.checked;
-    current.updatedAt = Date.now();
-    renderOptionsPreservingScroll();
-    updateDirtyState();
-  });
-  const removeButton = element("button", {
+function createSiteContext(site: ManagedSite): HTMLElement {
+  const remove = element("button", {
     className: "btn btn--danger",
-    text: "删除网站",
-    attrs: { type: "button", "aria-label": `删除${site.label || site.hostname}` }
+    text: t("options.removeSite"),
+    attrs: { type: "button" }
   });
-  removeButton.addEventListener("click", () => openRemoveSiteDialog(site));
+  remove.addEventListener("click", () => openRemoveSiteDialog(site));
 
   return element("section", {
     className: "site-context card",
-    attrs: { "aria-label": "当前网站配置范围" },
     children: [
       element("div", {
         children: [
-          element("span", { className: "site-context__eyebrow", text: "当前网站" }),
+          element("span", { className: "site-context__eyebrow", text: t("options.currentSite") }),
           element("h2", { text: site.label || site.hostname }),
           element("p", { text: site.origin })
         ]
       }),
       element("div", {
         className: "site-context__meta",
+        children: [remove]
+      })
+    ]
+  });
+}
+
+function createRestrictionModeCard(site: ManagedSite): HTMLElement {
+  const descriptionId = `restriction-mode-description-${site.id}`;
+  const description = element("p", {
+    className: "restriction-mode-card__description",
+    text: t(`options.mode.${site.restrictionMode}Description`),
+    attrs: { id: descriptionId, "aria-live": "polite" }
+  });
+  const mode = element("select", {
+    className: "input restriction-mode-card__select",
+    attrs: {
+      "aria-label": t("options.restrictionMode"),
+      "aria-describedby": descriptionId
+    },
+    children: (["lenient", "flow", "strict"] satisfies RestrictionMode[]).map((value) =>
+      element("option", {
+        text: t(`options.mode.${value}`),
+        attrs: { value, selected: site.restrictionMode === value }
+      })
+    )
+  });
+  mode.addEventListener("change", () => {
+    const current = draft?.sites[site.id];
+    if (!current) return;
+    current.restrictionMode = mode.value as RestrictionMode;
+    current.updatedAt = Date.now();
+    description.textContent = t(`options.mode.${current.restrictionMode}Description`);
+    markSiteDirty(site.id);
+  });
+  const confirmation = site.visitConfirmation ?? { enabled: false, waitSeconds: 3 };
+  site.visitConfirmation = confirmation;
+  const waitSeconds = element("input", {
+    className: "input visit-confirmation__wait",
+    attrs: {
+      type: "number",
+      min: 0,
+      max: 60,
+      step: 1,
+      value: confirmation.waitSeconds,
+      "aria-label": t("options.visitConfirmationWait")
+    }
+  });
+  waitSeconds.disabled = !confirmation.enabled;
+  const confirmationSwitch = createToggle(
+    t("options.visitConfirmation"),
+    confirmation.enabled,
+    "visit-confirmation-toggle"
+  );
+  confirmationSwitch.input.addEventListener("change", () => {
+    const current = draft?.sites[site.id];
+    if (!current) return;
+    current.visitConfirmation = {
+      ...(current.visitConfirmation ?? { enabled: false, waitSeconds: 3 }),
+      enabled: confirmationSwitch.input.checked
+    };
+    current.updatedAt = Date.now();
+    waitSeconds.disabled = !confirmationSwitch.input.checked;
+    markSiteDirty(site.id);
+  });
+  waitSeconds.addEventListener("change", () => {
+    const current = draft?.sites[site.id];
+    if (!current) return;
+    const value = clamp(waitSeconds.value, 0, 60, 3);
+    waitSeconds.value = String(value);
+    current.visitConfirmation = {
+      ...(current.visitConfirmation ?? { enabled: false, waitSeconds: 3 }),
+      waitSeconds: value
+    };
+    current.updatedAt = Date.now();
+    markSiteDirty(site.id);
+  });
+  return element("section", {
+    className: "restriction-mode-card card",
+    attrs: { "aria-labelledby": "restriction-mode-title" },
+    children: [
+      element("div", {
+        className: "restriction-mode-card__primary",
         children: [
-          element("span", {
-            className: "status-chip",
-            text: moduleIds.length > 0 ? moduleIds.join(" · ") : "通用网站规则"
+          element("div", {
+            className: "restriction-mode-card__copy",
+            children: [
+              element("h2", {
+                text: t("options.restrictionMode"),
+                attrs: { id: "restriction-mode-title" }
+              })
+            ]
+          }),
+          element("div", {
+            className: "restriction-mode-card__control",
+            children: [mode, description]
+          })
+        ]
+      }),
+      element("div", {
+        className: "visit-confirmation",
+        children: [
+          element("div", {
+            className: "visit-confirmation__copy",
+            children: [
+              element("h3", { text: t("options.visitConfirmation") }),
+              element("p", { text: t("options.visitConfirmationDescription") })
+            ]
           }),
           element("label", {
-            className: "site-context__toggle",
-            children: [element("span", { text: "应用时间规则" }), enabledToggle.label]
+            className: "visit-confirmation__field",
+            children: [
+              element("span", { text: t("options.visitConfirmationWait") }),
+              waitSeconds,
+              element("span", { text: t("common.seconds") })
+            ]
           }),
-          removeButton
+          confirmationSwitch.label
         ]
       })
     ]
   });
 }
 
-function createGenericTargetsArea(site: ManagedSite): HTMLElement {
-  const targets = targetsForSite(site);
+function createTimePeriodWorkspace(site: ManagedSite): HTMLElement {
+  const targets = site.targetIds
+    .map((id) => draft?.targets[id])
+    .filter((target): target is SiteTargetSettings => Boolean(target));
   return element("section", {
-    attrs: { "aria-labelledby": "generic-targets-title" },
+    className: "period-workspace",
+    attrs: { "aria-labelledby": "period-workspace-title" },
     children: [
-      createSectionHeading(
-        "generic-targets-title",
-        "时间配置",
-        targets.length > 1 ? "每个站内子项使用独立限额和时段。" : "设置整站限额和时段。"
-      ),
+      element("header", {
+        className: "section-heading",
+        children: [
+          element("div", {
+            children: [
+              element("h2", {
+                text: t("options.timePeriods"),
+                attrs: { id: "period-workspace-title" }
+              }),
+              element("p", { text: t("options.timePeriodsDescription") })
+            ]
+          })
+        ]
+      }),
       element("div", {
         className: "generic-target-list",
-        children:
-          targets.length > 0
-            ? targets.map(createGenericTargetCard)
-            : [
-                element("div", {
-                  className: "card generic-target-empty",
-                  text: "此网站还没有可配置规则"
-                })
-              ]
+        children: targets.map((target, targetIndex) => createTargetPeriods(target, targetIndex))
       })
     ]
   });
 }
 
-function createGenericTargetCard(target: SiteTargetSettings): HTMLElement {
-  const owner = targetRuleOwner(target);
-  const accessPolicy = element("select", {
-    className: "input",
-    attrs: { "aria-label": `${target.label}域名访问策略` },
+function createTargetPeriods(target: SiteTargetSettings, targetIndex: number): HTMLElement {
+  const add = element("button", {
+    className: "btn btn--primary",
+    attrs: {
+      type: "button",
+      "data-testid": targetIndex === 0 ? "period-add" : `period-add-${target.id}`
+    },
+    children: [icon("plus"), t("options.addPeriod")]
+  });
+  add.disabled = target.timePeriods.length >= MAX_TIME_PERIODS;
+  add.addEventListener("click", () => openPeriodDialog(target));
+
+  return element("article", {
+    className: "card period-target",
     children: [
-      element("option", { text: "按时间规则", attrs: { value: "timed" } }),
-      element("option", { text: "白名单：始终允许", attrs: { value: "always-allow" } }),
-      element("option", { text: "黑名单：始终阻止", attrs: { value: "always-block" } })
+      element("header", {
+        className: "period-target__header",
+        children: [
+          element("div", {
+            children: [
+              element("h3", { text: target.label }),
+              element("p", { text: `${target.timePeriods.length} · ${t("options.timePeriods")}` })
+            ]
+          }),
+          add
+        ]
+      }),
+      target.timePeriods.length > 0
+        ? element("ul", {
+            className: "period-list",
+            children: target.timePeriods.map((period) => createPeriodItem(target, period))
+          })
+        : element("p", { className: "schedule-empty", text: t("options.noPeriods") })
     ]
   });
-  accessPolicy.value = target.accessPolicy ?? "timed";
-  accessPolicy.addEventListener("change", () => {
+}
+
+function createPeriodItem(target: SiteTargetSettings, period: TimePeriodSettings): HTMLLIElement {
+  const periodName = displayPeriodName(period);
+  const periodToggle = createToggle(
+    `${t("common.enabled")} ${periodName}`,
+    period.enabled,
+    `period-toggle-${period.id}`
+  );
+  const edit = element("button", {
+    className: "btn btn--icon",
+    attrs: { type: "button", "aria-label": `${t("common.edit")} ${periodName}` },
+    children: [icon("edit")]
+  });
+  edit.addEventListener("click", () => openPeriodDialog(target, period));
+  const remove = element("button", {
+    className: "btn btn--icon btn--danger",
+    attrs: { type: "button", "aria-label": `${t("common.delete")} ${periodName}` },
+    children: [icon("trash")]
+  });
+  remove.addEventListener("click", () => {
     const current = draft?.targets[target.id];
     if (!current) return;
-    current.accessPolicy = accessPolicy.value as NonNullable<SiteTargetSettings["accessPolicy"]>;
+    current.timePeriods = current.timePeriods.filter((candidate) => candidate.id !== period.id);
     renderOptionsPreservingScroll();
-    updateDirtyState();
+    markTargetDirty(target.id);
   });
-  const usesTimedRules = (target.accessPolicy ?? "timed") === "timed";
-  const toggle = createToggle(
-    `${target.label}规则`,
-    target.enabled,
-    target.moduleSectionId
-      ? `section-toggle-${target.moduleSectionId}`
-      : `target-toggle-${target.id}`
-  );
-  toggle.input.addEventListener("change", () => {
-    if (!draft) return;
-    const current = draft.targets[target.id];
-    if (!current) return;
-    current.enabled = toggle.input.checked;
-    updateDirtyState();
+  const groupSummary =
+    period.behavior === "timed" && period.limitMinutes !== null
+      ? t("options.groupSummary", {
+          limit: period.limitMinutes,
+          groups: period.groupCount,
+          perGroup: formatGroupMinutes(period.limitMinutes / period.groupCount)
+        })
+      : t(
+          `options.period.${period.behavior === "timed" ? "timed" : period.behavior === "always-allow" ? "alwaysAllow" : "alwaysBlock"}`
+        );
+  const item = element("li", {
+    className: "period-item",
+    dataset: { enabled: String(period.enabled), behavior: period.behavior },
+    children: [
+      element("div", {
+        className: "period-item__identity",
+        children: [
+          element("span", { className: "period-item__status", attrs: { "aria-hidden": true } }),
+          element("div", {
+            children: [
+              element("strong", { text: periodName }),
+              element("span", {
+                text: `${formatDays(period.days)} · ${formatClockTime(period.startTime)}–${formatClockTime(period.endTime)}${period.startTime > period.endTime ? ` (${t("options.nextDay")})` : ""}`
+              }),
+              element("small", { text: groupSummary })
+            ]
+          })
+        ]
+      }),
+      element("div", {
+        className: "period-item__actions",
+        children: [periodToggle.label, edit, remove]
+      })
+    ]
+  });
+  periodToggle.input.addEventListener("change", () => {
+    const current = draft?.targets[target.id];
+    const currentPeriod = current?.timePeriods.find((candidate) => candidate.id === period.id);
+    if (!currentPeriod) return;
+    currentPeriod.enabled = periodToggle.input.checked;
+    item.dataset.enabled = String(currentPeriod.enabled);
+    markTargetDirty(target.id);
+  });
+  return item;
+}
+
+function openPeriodDialog(target: SiteTargetSettings, existing?: TimePeriodSettings): void {
+  const period = existing ? clone(existing) : createDefaultTimePeriod(45);
+  const systemName = t("options.defaultPeriodName");
+  const name = element("input", {
+    className: "input",
+    attrs: { type: "text", value: period.name || systemName, maxlength: 60, required: true }
+  });
+  const behavior = element("select", {
+    className: "input",
+    children: (["timed", "always-allow", "always-block"] satisfies TimePeriodBehavior[]).map(
+      (value) =>
+        element("option", {
+          text: t(
+            value === "timed"
+              ? "options.period.timed"
+              : value === "always-allow"
+                ? "options.period.alwaysAllow"
+                : "options.period.alwaysBlock"
+          ),
+          attrs: { value, selected: period.behavior === value }
+        })
+    )
   });
   const limit = element("input", {
     className: "input",
@@ -376,200 +554,191 @@ function createGenericTargetCard(target: SiteTargetSettings): HTMLElement {
       type: "number",
       min: 1,
       max: 1440,
-      step: 5,
-      value: target.dailyLimitMinutes ?? "",
-      placeholder: "不限额",
-      "aria-label": `${target.label}每日限额（分钟）`
+      step: 1,
+      value: period.limitMinutes ?? 45,
+      required: true
     }
   });
-  limit.addEventListener("input", () => {
-    if (!draft) return;
-    const current = draft.targets[target.id];
-    if (!current) return;
-    current.dailyLimitMinutes = limit.value
-      ? Math.min(1440, Math.max(1, Math.round(Number(limit.value))))
-      : null;
-    updateDirtyState();
-  });
-  limit.disabled = !usesTimedRules;
-  const scheduleItems = target.schedules.length
-    ? target.schedules.map((rule) => createScheduleItem(owner, rule))
-    : [element("li", { className: "schedule-empty", text: "未设置时间规则" })];
-  const addRule = element("button", {
-    className: "btn",
-    attrs: {
-      type: "button",
-      "aria-label": `为${target.label}添加时间规则`,
-      "data-testid": target.moduleSectionId
-        ? target.moduleSectionId === "home"
-          ? "schedule-add"
-          : `schedule-add-${target.moduleSectionId}`
-        : `schedule-add-${target.id}`
-    },
-    children: [icon("plus"), "自定义"]
-  });
-  addRule.addEventListener("click", () => openScheduleDialog(owner));
-  addRule.disabled = !usesTimedRules;
-  const addPreset = element("button", {
-    className: "btn",
-    attrs: { type: "button", "aria-label": `为${target.label}添加常用时段` },
-    children: [icon("clock"), "常用时段"]
-  });
-  addPreset.addEventListener("click", () => openPresetDialog(owner));
-  addPreset.disabled = !usesTimedRules;
-  const accessToggle = createToggle(
-    `${target.label}临时访问`,
-    target.temporaryAccess.enabled,
-    `temporary-access-${target.id}`
-  );
-  const accessDuration = element("input", {
+  const groups = element("input", {
     className: "input",
-    attrs: {
-      type: "number",
-      min: 1,
-      max: 60,
-      value: target.temporaryAccess.durationMinutes,
-      "aria-label": `${target.label}每次临时访问分钟数`
-    }
+    attrs: { type: "number", min: 1, max: 24, step: 1, value: period.groupCount, required: true }
   });
-  const accessUses = element("input", {
+  const start = element("input", {
     className: "input",
-    attrs: {
-      type: "number",
-      min: 0,
-      max: 50,
-      value: target.temporaryAccess.maxUsesPerDay,
-      "aria-label": `${target.label}每日临时访问次数`
-    }
+    attrs: { type: "time", value: period.startTime, required: true }
   });
-  accessToggle.input.disabled = !usesTimedRules;
-  accessDuration.disabled = !usesTimedRules;
-  accessUses.disabled = !usesTimedRules;
-  accessToggle.input.addEventListener("change", () => {
-    const current = draft?.targets[target.id];
-    if (!current) return;
-    current.temporaryAccess.enabled = accessToggle.input.checked;
-    updateDirtyState();
+  const end = element("input", {
+    className: "input",
+    attrs: { type: "time", value: period.endTime, required: true }
   });
-  accessDuration.addEventListener("input", () => {
-    const current = draft?.targets[target.id];
-    if (!current) return;
-    current.temporaryAccess.durationMinutes = clampNumber(accessDuration.value, 1, 60, 5);
-    updateDirtyState();
+  const dayInputs = WEEKDAYS.map((day) => ({
+    day,
+    input: element("input", {
+      attrs: {
+        type: "checkbox",
+        checked: period.days.includes(day.value),
+        "aria-label": t(day.labelKey)
+      }
+    })
+  }));
+  const note = element("p", { className: "schedule-note", attrs: { role: "status" } });
+  const enabled = createToggle(t("common.enabled"), period.enabled);
+  const close = element("button", {
+    className: "btn btn--icon",
+    attrs: { type: "button", "aria-label": t("common.close") },
+    children: [icon("close")]
   });
-  accessUses.addEventListener("input", () => {
-    const current = draft?.targets[target.id];
-    if (!current) return;
-    current.temporaryAccess.maxUsesPerDay = clampNumber(accessUses.value, 0, 50, 3);
-    updateDirtyState();
+  const cancel = element("button", {
+    className: "btn",
+    text: t("common.cancel"),
+    attrs: { type: "button" }
   });
-  return element("article", {
-    className: "card generic-target-card",
+  const submit = element("button", {
+    className: "btn btn--primary",
+    text: existing ? t("common.save") : t("common.add"),
+    attrs: { type: "submit" }
+  });
+  const timedFields = element("div", {
+    className: "period-dialog__timed",
+    children: [
+      createField(t("options.periodLimit"), limit, t("common.minutes")),
+      createField(t("options.periodGroups"), groups)
+    ]
+  });
+  const form = element("form", {
+    className: "dialog period-dialog",
+    attrs: { role: "dialog", "aria-modal": true, "aria-labelledby": "period-dialog-title" },
     children: [
       element("header", {
+        className: "dialog__header",
         children: [
-          element("div", {
-            children: [
-              element("h3", { text: target.label }),
-              element("p", { text: target.moduleSectionId ? "站内子项" : "整站时间配置" })
-            ]
+          element("h2", {
+            text: existing ? t("options.editPeriod") : t("options.addPeriod"),
+            attrs: { id: "period-dialog-title" }
           }),
-          toggle.label
+          close
         ]
       }),
-      element("label", {
-        className: "generic-target-card__policy",
+      createField(t("options.periodName"), name),
+      createField(t("options.periodBehavior"), behavior),
+      timedFields,
+      element("fieldset", {
+        className: "field schedule-weekdays",
         children: [
-          element("span", { text: "域名名单" }),
-          accessPolicy,
-          element("small", {
-            text: usesTimedRules
-              ? "按下方额度和时段决定"
-              : target.accessPolicy === "always-block"
-                ? "无临时访问，始终阻止"
-                : "绕过额度和时段，始终允许"
+          element("legend", { text: t("options.periodDays") }),
+          element("div", {
+            className: "day-picker",
+            children: dayInputs.map(({ day, input }) =>
+              element("label", {
+                attrs: { title: t(day.labelKey) },
+                children: [input, t(day.shortKey)]
+              })
+            )
           })
         ]
       }),
       element("div", {
-        className: "generic-target-card__limit",
-        children: [element("span", { text: "每日限额" }), limit, element("span", { text: "分钟" })]
-      }),
-      element("div", {
-        className: "schedule-heading",
+        className: "time-fields",
         children: [
-          element("h4", { text: "时间规则" }),
-          element("div", { className: "schedule-heading__actions", children: [addPreset, addRule] })
+          createField(t("options.periodStart"), start),
+          element("span", { className: "time-fields__dash", text: t("options.periodTo") }),
+          createField(t("options.periodEnd"), end)
         ]
       }),
-      element("ul", { className: "schedule-list", children: scheduleItems }),
       element("div", {
-        className: "generic-target-card__temporary",
-        children: [
-          createSettingInline("临时访问", accessToggle.label),
-          createSettingInline("每次分钟", accessDuration),
-          createSettingInline("每日次数", accessUses)
-        ]
-      })
+        className: "access-toggle-row",
+        children: [element("strong", { text: t("common.enabled") }), enabled.label]
+      }),
+      note,
+      element("footer", { className: "dialog__footer", children: [cancel, submit] })
+    ]
+  });
+  const backdrop = element("div", { className: "dialog-backdrop", children: [form] });
+  const closeDialog = () => backdrop.remove();
+  const updateFields = () => {
+    const timed = behavior.value === "timed";
+    timedFields.hidden = !timed;
+    limit.required = timed;
+    groups.required = timed;
+    note.textContent =
+      start.value === end.value
+        ? t("options.fullDayNote")
+        : start.value > end.value
+          ? t("options.crossMidnightNote")
+          : "";
+  };
+  close.addEventListener("click", closeDialog);
+  cancel.addEventListener("click", closeDialog);
+  backdrop.addEventListener("mousedown", (event) => {
+    if (event.target === backdrop) closeDialog();
+  });
+  behavior.addEventListener("change", updateFields);
+  start.addEventListener("input", updateFields);
+  end.addEventListener("input", updateFields);
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const days = dayInputs.filter(({ input }) => input.checked).map(({ day }) => day.value);
+    if (days.length === 0) {
+      note.textContent = t("options.selectOneDay");
+      dayInputs[0]?.input.focus();
+      return;
+    }
+    const current = draft?.targets[target.id];
+    if (!current || (current.timePeriods.length >= MAX_TIME_PERIODS && !existing)) {
+      note.textContent = t("options.periodLimitReached");
+      return;
+    }
+    const nextBehavior = behavior.value as TimePeriodBehavior;
+    const updated: TimePeriodSettings = {
+      id: period.id,
+      name: period.name === "" && name.value.trim() === systemName ? "" : name.value.trim(),
+      enabled: enabled.input.checked,
+      days,
+      startTime: start.value,
+      endTime: end.value,
+      behavior: nextBehavior,
+      limitMinutes: nextBehavior === "timed" ? clamp(limit.value, 1, 1440, 45) : null,
+      groupCount: nextBehavior === "timed" ? clamp(groups.value, 1, 24, 1) : 1
+    };
+    const index = current.timePeriods.findIndex((candidate) => candidate.id === updated.id);
+    if (index >= 0) current.timePeriods[index] = updated;
+    else current.timePeriods.push(updated);
+    closeDialog();
+    renderOptionsPreservingScroll();
+    markTargetDirty(target.id);
+  });
+  document.body.append(backdrop);
+  updateFields();
+  name.focus();
+}
+
+function displayPeriodName(period: TimePeriodSettings): string {
+  return period.name || t("options.defaultPeriodName");
+}
+
+function createField(label: string, control: HTMLElement, suffix?: string): HTMLElement {
+  return element("label", {
+    className: "field",
+    children: [
+      element("span", { text: label }),
+      suffix
+        ? element("span", { className: "period-dialog__number", children: [control, suffix] })
+        : control
     ]
   });
 }
 
-function createSettingInline(label: string, control: HTMLElement): HTMLElement {
-  return element("label", {
-    className: "generic-target-card__temporary-field",
-    children: [element("span", { text: label }), control]
+function createAddSiteButton(): HTMLButtonElement {
+  const button = element("button", {
+    className: "btn btn--primary",
+    attrs: { type: "button", "data-testid": "site-add-button" },
+    children: [icon("plus"), t("options.addSite")]
   });
-}
-
-function clampNumber(value: string, min: number, max: number, fallback: number): number {
-  const parsed = Math.round(Number(value));
-  return Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback;
-}
-
-function selectInitialSite(settings: FocusSettings): string | null {
-  return sortedSites(settings)[0]?.id ?? null;
-}
-
-function sortedSites(settings: FocusSettings): ManagedSite[] {
-  return Object.values(settings.sites).sort(
-    (left, right) =>
-      Number(right.enabled) - Number(left.enabled) ||
-      (left.label || left.hostname).localeCompare(right.label || right.hostname)
-  );
-}
-
-function getSelectedSite(): ManagedSite | null {
-  if (!draft || !selectedSiteId) return null;
-  return draft.sites[selectedSiteId] ?? null;
-}
-
-function targetsForSite(site: ManagedSite): SiteTargetSettings[] {
-  if (!draft) return [];
-  return site.targetIds
-    .map((id) => draft?.targets[id])
-    .filter((target): target is SiteTargetSettings => Boolean(target));
-}
-
-function targetRuleOwner(target: SiteTargetSettings): RuleOwner {
-  return { kind: "target", id: target.id, label: target.label };
-}
-
-function scheduleRulesFor(owner: RuleOwner): TimeAccessRule[] {
-  return draft?.targets[owner.id]?.schedules ?? [];
-}
-
-function replaceScheduleRules(owner: RuleOwner, rules: TimeAccessRule[]): void {
-  const target = draft?.targets[owner.id];
-  if (target) target.schedules = rules;
+  button.addEventListener("click", openAddSiteDialog);
+  return button;
 }
 
 function openAddSiteDialog(): void {
-  if (isDirty()) {
-    toast("请先保存当前网站的更改", "error");
-    return;
-  }
-  const titleId = "add-site-dialog-title";
   const input = element("input", {
     className: "input",
     attrs: {
@@ -578,71 +747,54 @@ function openAddSiteDialog(): void {
       autocomplete: "url",
       placeholder: "example.com",
       required: true,
-      "aria-label": "网站域名或网址",
       "data-testid": "site-add-input"
     }
   });
-  const note = element("p", {
-    className: "schedule-note",
-    text: "只会申请此网站的精确访问权限。",
-    attrs: { "aria-live": "polite" }
-  });
-  const cancelButton = element("button", {
+  const note = element("p", { className: "schedule-note", text: t("options.permissionNote") });
+  const cancel = element("button", {
     className: "btn",
-    text: "取消",
+    text: t("common.cancel"),
     attrs: { type: "button" }
   });
-  const submitButton = element("button", {
+  const submit = element("button", {
     className: "btn btn--primary",
-    text: "添加网站",
+    text: t("options.addSite"),
     attrs: { type: "submit" }
   });
   const dialog = element("dialog", {
     className: "dialog options-site-dialog",
-    attrs: { "aria-labelledby": titleId },
     children: [
       element("form", {
-        attrs: { method: "dialog" },
         children: [
-          element("header", {
-            className: "dialog__header",
-            children: [element("h2", { text: "添加网站", attrs: { id: titleId } })]
-          }),
-          element("label", {
-            className: "field",
-            children: [element("span", { text: "域名或网址" }), input]
-          }),
+          element("h2", { text: t("options.addSite") }),
+          createField(t("options.websiteInput"), input),
           note,
-          element("footer", {
-            className: "dialog__footer",
-            children: [cancelButton, submitButton]
-          })
+          element("footer", { className: "dialog__footer", children: [cancel, submit] })
         ]
       })
     ]
   });
-  const form = dialog.querySelector("form");
-  cancelButton.addEventListener("click", () => dialog.close());
-  form?.addEventListener("submit", (event) => {
+  cancel.addEventListener("click", () => dialog.close());
+  dialog.querySelector("form")?.addEventListener("submit", (event) => {
     event.preventDefault();
     void (async () => {
       try {
+        if (!(await flushAutoSave())) return;
         const website = normalizeWebsiteInput(input.value);
-        setButtonBusy(submitButton, true, "请求权限");
-        const granted = await requestWebsitePermission(website.permissionPattern);
-        if (!granted) {
-          note.textContent = "未获得网站权限";
+        setButtonBusy(submit, true, t("options.requestingPermission"));
+        if (!(await requestWebsitePermission(website.permissionPattern))) {
+          note.textContent = t("options.permissionDenied");
           return;
         }
-        setButtonBusy(submitButton, true, "正在添加");
+        setButtonBusy(submit, true, t("options.adding"));
         await addManagedSite(website.origin);
         dialog.close();
-        toast("网站已添加");
+        toast(t("options.siteAdded"));
         await loadOptions(website.origin);
       } catch (error) {
         note.textContent = error instanceof Error ? error.message : describeError(error);
       } finally {
-        setButtonBusy(submitButton, false);
+        setButtonBusy(submit, false);
       }
     })();
   });
@@ -653,47 +805,39 @@ function openAddSiteDialog(): void {
 }
 
 function openRemoveSiteDialog(site: ManagedSite): void {
-  if (isDirty()) {
-    toast("请先保存当前网站的更改", "error");
-    return;
-  }
-  const cancelButton = element("button", {
+  const cancel = element("button", {
     className: "btn",
-    text: "取消",
+    text: t("common.cancel"),
     attrs: { type: "button" }
   });
-  const confirmButton = element("button", {
+  const confirm = element("button", {
     className: "btn btn--danger",
-    text: "删除",
+    text: t("common.delete"),
     attrs: { type: "button" }
   });
   const dialog = element("dialog", {
     className: "dialog options-site-dialog",
-    attrs: { "aria-labelledby": "remove-site-dialog-title" },
     children: [
       element("h2", {
-        text: `删除 ${site.label || site.hostname}？`,
-        attrs: { id: "remove-site-dialog-title" }
+        text: t("options.removeSiteQuestion", { site: site.label || site.hostname })
       }),
-      element("p", { text: "该网站的时间配置会被删除，并撤销对应的网站权限。" }),
-      element("div", {
-        className: "dialog__actions",
-        children: [cancelButton, confirmButton]
-      })
+      element("p", { text: t("options.removeSiteDetail") }),
+      element("div", { className: "dialog__actions", children: [cancel, confirm] })
     ]
   });
-  cancelButton.addEventListener("click", () => dialog.close());
-  confirmButton.addEventListener("click", () => {
+  cancel.addEventListener("click", () => dialog.close());
+  confirm.addEventListener("click", () => {
     void (async () => {
-      setButtonBusy(confirmButton, true, "正在删除");
+      setButtonBusy(confirm, true, t("options.deleting"));
       try {
+        if (!(await flushAutoSave())) return;
         await removeManagedSite(site.id);
         selectedSiteId = null;
         dialog.close();
-        toast("网站已删除");
+        toast(t("options.siteRemoved"));
         await loadOptions();
       } catch (error) {
-        setButtonBusy(confirmButton, false);
+        setButtonBusy(confirm, false);
         toast(describeError(error), "error");
       }
     })();
@@ -703,521 +847,168 @@ function openRemoveSiteDialog(site: ManagedSite): void {
   dialog.showModal();
 }
 
-function createScheduleItem(owner: RuleOwner, schedule: TimeAccessRule): HTMLLIElement {
-  const editButton = element("button", {
-    className: "btn btn--icon",
-    attrs: { type: "button", title: "编辑时段", "aria-label": `编辑${schedule.name}` },
-    children: [icon("edit")]
-  });
-  editButton.addEventListener("click", () => openScheduleDialog(owner, schedule));
-  const deleteButton = element("button", {
-    className: "btn btn--icon btn--danger",
-    attrs: { type: "button", title: "删除时段", "aria-label": `删除${schedule.name}` },
-    children: [icon("trash")]
-  });
-  deleteButton.addEventListener("click", () => {
-    if (!draft) return;
-    replaceScheduleRules(
-      owner,
-      scheduleRulesFor(owner).filter((candidate) => candidate.id !== schedule.id)
-    );
-    renderOptionsPreservingScroll();
-    toast(`已从草稿删除“${schedule.name}”`);
-  });
-
-  return element("li", {
-    className: "schedule-item",
-    dataset: { enabled: String(schedule.enabled), effect: schedule.effect },
-    children: [
-      element("div", {
-        className: "schedule-item__main",
-        children: [
-          element("span", { className: "schedule-item__status", attrs: { "aria-hidden": "true" } }),
-          element("span", {
-            className: "schedule-item__copy",
-            children: [
-              element("strong", {
-                text: `${schedule.name}${schedule.enabled ? "" : "（已暂停）"}`
-              }),
-              element("span", {
-                text: `${formatDays(schedule.days)} · ${formatClockTime(schedule.startTime)}–${formatClockTime(schedule.endTime)}${crossesMidnight(schedule) ? "（次日）" : ""}`
-              })
-            ]
-          }),
-          element("span", {
-            className: "schedule-item__effect",
-            text: schedule.effect === "allow" ? "可用" : "不可用"
-          })
-        ]
-      }),
-      element("div", { className: "schedule-item__actions", children: [editButton, deleteButton] })
-    ]
-  });
-}
-
-function createSectionHeading(id: string, title: string, description: string): HTMLElement {
-  return element("header", {
-    className: "section-heading",
-    children: [
-      element("div", {
-        children: [
-          element("h2", { text: title, attrs: { id } }),
-          element("p", { text: description })
-        ]
-      })
-    ]
-  });
-}
-
-function createSavebar(): HTMLElement {
-  savebarButton = element("button", {
-    className: "btn btn--primary",
-    text: "保存全部更改",
-    attrs: { type: "button" }
-  });
-  savebarButton.addEventListener(
-    "click",
-    () => void saveSettings(savebarButton as HTMLButtonElement)
-  );
-  return element("div", {
-    className: "options-savebar",
-    dataset: { visible: "false" },
-    children: [
-      element("div", {
-        className: "options-savebar__inner",
-        children: [
-          element("div", {
-            className: "options-savebar__copy",
-            children: [element("strong", { text: "未保存" })]
-          }),
-          savebarButton
-        ]
-      })
-    ]
-  });
-}
-
 function createToggle(
   labelText: string,
   checked: boolean,
-  testId: string
-): {
-  label: HTMLLabelElement;
-  input: HTMLInputElement;
-} {
+  testId?: string
+): { label: HTMLLabelElement; input: HTMLInputElement } {
   const input = element("input", {
-    attrs: { type: "checkbox", checked, "aria-label": labelText, "data-testid": testId }
+    attrs: {
+      type: "checkbox",
+      checked,
+      "aria-label": labelText,
+      ...(testId ? { "data-testid": testId } : {})
+    }
   });
   return {
     input,
     label: element("label", {
       className: "switch",
-      attrs: { title: labelText },
       children: [input, element("span", { className: "sr-only", text: labelText })]
     })
   };
 }
 
-function openScheduleDialog(owner: RuleOwner, existing?: TimeAccessRule): void {
-  if (!draft) return;
-  const schedule: TimeAccessRule = existing
-    ? { ...existing, days: [...existing.days] }
-    : {
-        id: createId(),
-        name: "时间规则",
-        enabled: true,
-        effect: "block",
-        days: [1, 2, 3, 4, 5],
-        startTime: "09:00",
-        endTime: "18:00"
-      };
-
-  const titleId = `schedule-dialog-${schedule.id}`;
-  const nameInput = element("input", {
-    className: "input",
-    attrs: {
-      type: "text",
-      maxlength: "60",
-      value: schedule.name,
-      required: true,
-      "aria-label": "规则名称"
-    }
-  });
-  const enabledToggle = createToggle("启用这条规则", schedule.enabled, "schedule-enabled");
-  const effectInputs = (
-    [
-      { value: "allow", label: "始终可用（白名单）" },
-      { value: "block", label: "始终不可用（黑名单）" }
-    ] satisfies ReadonlyArray<{ value: TimeAccessEffect; label: string }>
-  ).map((option) => {
-    const input = element("input", {
-      attrs: {
-        type: "radio",
-        name: `effect-${schedule.id}`,
-        value: option.value,
-        checked: schedule.effect === option.value
-      }
-    });
-    return { ...option, input };
-  });
-  const startInput = element("input", {
-    className: "input",
-    attrs: { type: "time", value: schedule.startTime, required: true, "aria-label": "开始时间" }
-  });
-  const endInput = element("input", {
-    className: "input",
-    attrs: { type: "time", value: schedule.endTime, required: true, "aria-label": "结束时间" }
-  });
-  const note = element("p", { className: "schedule-note", attrs: { "aria-live": "polite" } });
-  const dayInputs = WEEKDAYS.map((day) => {
-    const input = element("input", {
-      attrs: {
-        type: "checkbox",
-        value: day.value,
-        checked: schedule.days.includes(day.value),
-        "aria-label": day.label
-      }
-    });
-    return { input, day };
-  });
-
-  const backdrop = element("div", { className: "dialog-backdrop" });
-  const closeButton = element("button", {
-    className: "btn btn--icon",
-    attrs: { type: "button", title: "关闭", "aria-label": "关闭时段编辑" },
-    children: [icon("close")]
-  });
-  const cancelButton = element("button", {
-    className: "btn",
-    text: "取消",
-    attrs: { type: "button" }
-  });
-  const saveButton = element("button", {
-    className: "btn btn--primary",
-    text: existing ? "保存" : "添加",
-    attrs: { type: "submit", "data-testid": "schedule-save" }
-  });
-  const form = element("form", {
-    className: "dialog",
-    attrs: { role: "dialog", "aria-modal": "true", "aria-labelledby": titleId },
-    children: [
-      element("header", {
-        className: "dialog__header",
-        children: [
-          element("div", {
-            children: [
-              element("h2", {
-                text: existing ? "编辑时间规则" : `为${owner.label}添加时间规则`,
-                attrs: { id: titleId }
-              })
-            ]
-          }),
-          closeButton
-        ]
-      }),
-      element("div", {
-        className: "stack",
-        children: [
-          element("label", {
-            className: "field",
-            children: [element("span", { text: "名称" }), nameInput]
-          }),
-          element("fieldset", {
-            className: "field",
-            children: [
-              element("legend", { text: "这段时间" }),
-              element("div", {
-                className: "rule-effect-picker",
-                children: effectInputs.map((option) =>
-                  element("label", { children: [option.input, option.label] })
-                )
-              })
-            ]
-          }),
-          element("div", {
-            className: "access-toggle-row",
-            children: [
-              element("div", {
-                children: [
-                  element("strong", { text: "启用规则" }),
-                  element("p", { text: "关闭后仍保留设置" })
-                ]
-              }),
-              enabledToggle.label
-            ]
-          }),
-          element("fieldset", {
-            className: "field schedule-weekdays",
-            children: [
-              element("legend", { text: "星期" }),
-              element("div", {
-                className: "day-picker",
-                children: dayInputs.map(({ input, day }) =>
-                  element("label", { attrs: { title: day.label }, children: [input, day.short] })
-                )
-              })
-            ]
-          }),
-          element("div", {
-            className: "time-fields",
-            children: [
-              element("label", {
-                className: "field",
-                children: [element("span", { text: "开始" }), startInput]
-              }),
-              element("span", { className: "time-fields__dash", text: "至" }),
-              element("label", {
-                className: "field",
-                children: [element("span", { text: "结束" }), endInput]
-              })
-            ]
-          }),
-          note
-        ]
-      }),
-      element("footer", { className: "dialog__footer", children: [cancelButton, saveButton] })
-    ]
-  });
-
-  function close(): void {
-    document.removeEventListener("keydown", onKeydown);
-    backdrop.remove();
-  }
-  function onKeydown(event: KeyboardEvent): void {
-    if (event.key === "Escape") close();
-  }
-  function updateNote(): void {
-    note.textContent =
-      startInput.value === endInput.value
-        ? "在所选星期全天生效"
-        : startInput.value > endInput.value
-          ? "将延续到次日结束时间"
-          : "";
-  }
-  closeButton.addEventListener("click", close);
-  cancelButton.addEventListener("click", close);
-  backdrop.addEventListener("mousedown", (event) => {
-    if (event.target === backdrop) close();
-  });
-  startInput.addEventListener("input", updateNote);
-  endInput.addEventListener("input", updateNote);
-  form.addEventListener("submit", (event) => {
-    event.preventDefault();
-    if (!draft) return;
-    const days = dayInputs.filter(({ input }) => input.checked).map(({ day }) => day.value);
-    if (days.length === 0) {
-      note.textContent = "请至少选择一天。";
-      dayInputs[0]?.input.focus();
-      return;
-    }
-    if (!nameInput.value.trim() || !startInput.value || !endInput.value) return;
-    const updated: TimeAccessRule = {
-      ...schedule,
-      name: nameInput.value.trim(),
-      enabled: enabledToggle.input.checked,
-      effect: effectInputs.find(({ input }) => input.checked)?.value ?? "block",
-      days,
-      startTime: startInput.value,
-      endTime: endInput.value
-    };
-    const schedules = scheduleRulesFor(owner);
-    const index = schedules.findIndex((candidate) => candidate.id === updated.id);
-    if (index >= 0) schedules[index] = updated;
-    else if (schedules.length < MAX_TIME_ACCESS_RULES) schedules.push(updated);
-    else {
-      note.textContent = "时段已达上限";
-      return;
-    }
-    close();
-    renderOptionsPreservingScroll();
-    toast(existing ? "时段已更新" : "时段已添加");
-  });
-
-  backdrop.append(form);
-  document.body.append(backdrop);
-  document.addEventListener("keydown", onKeydown);
-  updateNote();
-  window.setTimeout(() => nameInput.focus(), 0);
-}
-
-function openPresetDialog(owner: RuleOwner): void {
-  if (!draft) return;
-  const titleId = `preset-dialog-${owner.kind}-${owner.id.replace(/[^A-Za-z0-9_-]/gu, "-")}`;
-  const dayInputs = WEEKDAYS.map((day) => {
-    const input = element("input", {
-      attrs: { type: "checkbox", value: day.value, checked: true, "aria-label": day.label }
-    });
-    return { input, day };
-  });
-  const note = element("p", { className: "schedule-note", attrs: { "aria-live": "polite" } });
-  const backdrop = element("div", { className: "dialog-backdrop" });
-  const closeButton = element("button", {
-    className: "btn btn--icon",
-    attrs: { type: "button", title: "关闭", "aria-label": "关闭常用时段" },
-    children: [icon("close")]
-  });
-
-  const presetRows = TIME_ACCESS_PRESETS.map((preset) =>
-    element("li", {
-      className: "preset-rule",
-      children: [
-        element("div", {
-          children: [
-            element("strong", { text: preset.label }),
-            element("span", { text: formatPresetRanges(preset) })
-          ]
-        }),
-        element("div", {
-          className: "preset-rule__actions",
-          children: (["allow", "block"] satisfies TimeAccessEffect[]).map((effect) => {
-            const button = element("button", {
-              className: effect === "allow" ? "btn btn--allow" : "btn",
-              text: effect === "allow" ? "设为可用" : "设为不可用",
-              attrs: { type: "button" }
-            });
-            button.addEventListener("click", () =>
-              addPreset(owner, preset, effect, dayInputs, note)
-            );
-            return button;
-          })
-        })
-      ]
-    })
+function sortedSites(): ManagedSite[] {
+  return Object.values(draft?.sites ?? {}).sort((left, right) =>
+    (left.label || left.hostname).localeCompare(right.label || right.hostname)
   );
-
-  const dialog = element("section", {
-    className: "dialog",
-    attrs: { role: "dialog", "aria-modal": "true", "aria-labelledby": titleId },
-    children: [
-      element("header", {
-        className: "dialog__header",
-        children: [element("h2", { text: "添加常用时段", attrs: { id: titleId } }), closeButton]
-      }),
-      element("fieldset", {
-        className: "field schedule-weekdays",
-        children: [
-          element("legend", { text: "星期" }),
-          element("div", {
-            className: "day-picker",
-            children: dayInputs.map(({ input, day }) =>
-              element("label", { attrs: { title: day.label }, children: [input, day.short] })
-            )
-          })
-        ]
-      }),
-      element("ul", { className: "preset-rule-list", children: presetRows }),
-      note
-    ]
-  });
-
-  const close = (): void => {
-    document.removeEventListener("keydown", onKeydown);
-    backdrop.remove();
-    renderOptionsPreservingScroll();
-  };
-  const onKeydown = (event: KeyboardEvent): void => {
-    if (event.key === "Escape") close();
-  };
-  closeButton.addEventListener("click", close);
-  backdrop.addEventListener("mousedown", (event) => {
-    if (event.target === backdrop) close();
-  });
-  backdrop.append(dialog);
-  document.body.append(backdrop);
-  document.addEventListener("keydown", onKeydown);
-  closeButton.focus();
 }
 
-function addPreset(
-  owner: RuleOwner,
-  preset: TimeAccessPreset,
-  effect: TimeAccessEffect,
-  dayInputs: ReadonlyArray<{ input: HTMLInputElement; day: (typeof WEEKDAYS)[number] }>,
-  note: HTMLElement
-): void {
-  if (!draft) return;
-  const days = dayInputs.filter(({ input }) => input.checked).map(({ day }) => day.value);
-  if (days.length === 0) {
-    note.textContent = "请至少选择一天";
+function markSiteDirty(siteId: string): void {
+  pendingSiteIds.add(siteId);
+  scheduleAutoSave();
+}
+
+function markTargetDirty(targetId: string): void {
+  pendingTargetIds.add(targetId);
+  scheduleAutoSave();
+}
+
+function scheduleAutoSave(): void {
+  if (!isDirty()) {
+    saveStatus = "saved";
+    updateSaveState();
     return;
   }
+  saveStatus = "unsaved";
+  updateSaveState();
+  if (autoSaveTimer !== undefined) window.clearTimeout(autoSaveTimer);
+  autoSaveTimer = window.setTimeout(() => {
+    autoSaveTimer = undefined;
+    void flushAutoSave();
+  }, 0);
+}
 
-  const rules = scheduleRulesFor(owner);
-  const signatures = new Set(rules.map(timeRuleSignature));
-  const candidates = createPresetRules(preset, effect, days, createId).filter(
-    (candidate) => !signatures.has(timeRuleSignature(candidate))
-  );
-  const added = candidates.slice(0, Math.max(0, MAX_TIME_ACCESS_RULES - rules.length));
-  if (added.length === 0) {
-    note.textContent = rules.length >= MAX_TIME_ACCESS_RULES ? "时段已达上限" : "这些时段已经添加";
-    return;
+/**
+ * Serializes writes and always persists the latest draft after an in-flight write.
+ * This prevents rapid controls from resolving out of order or dropping later edits.
+ */
+async function flushAutoSave(): Promise<boolean> {
+  if (autoSaveTimer !== undefined) {
+    window.clearTimeout(autoSaveTimer);
+    autoSaveTimer = undefined;
   }
-  rules.push(...added);
-  note.textContent = `已添加 ${added.length} 个${effect === "allow" ? "可用" : "不可用"}时段`;
-  updateDirtyState();
-}
+  if (saveLoop) return saveLoop;
+  saveLoop = (async () => {
+    while (draft && (pendingSiteIds.size > 0 || pendingTargetIds.size > 0)) {
+      saveStatus = "saving";
+      updateSaveState();
+      const siteId = pendingSiteIds.values().next().value;
+      if (siteId) {
+        pendingSiteIds.delete(siteId);
+        const site = draft.sites[siteId];
+        if (!site) continue;
+        const persistedMode = site.restrictionMode;
+        const persistedConfirmation = clone(
+          site.visitConfirmation ?? { enabled: false, waitSeconds: 3 }
+        );
+        try {
+          const normalized = await sendRequest({
+            type: "UPDATE_MANAGED_SITE",
+            siteId,
+            patch: {
+              restrictionMode: persistedMode,
+              visitConfirmation: persistedConfirmation
+            }
+          });
+          if (savedConfiguration) savedConfiguration.sites[siteId] = clone(normalized);
+          const current = draft?.sites[siteId];
+          if (
+            current?.restrictionMode === persistedMode &&
+            snapshot(current.visitConfirmation) === snapshot(persistedConfirmation)
+          ) {
+            draft.sites[siteId] = clone(normalized);
+          }
+        } catch (error) {
+          pendingSiteIds.add(siteId);
+          return handleAutoSaveError(error);
+        }
+        continue;
+      }
 
-function formatPresetRanges(preset: TimeAccessPreset): string {
-  return preset.ranges
-    .map((range) => `${formatClockTime(range.startTime)}–${formatClockTime(range.endTime)}`)
-    .join(" · ");
-}
-
-function timeRuleSignature(rule: TimeAccessRule): string {
-  return [rule.effect, [...rule.days].sort().join(","), rule.startTime, rule.endTime].join("|");
-}
-
-async function saveSettings(button: HTMLButtonElement): Promise<void> {
-  if (!draft || !isDirty()) return;
-  const siteStateChanges = getSiteStateChanges(draft, savedSnapshot);
-  setButtonBusy(button, true, "保存中");
-  if (button !== topSaveButton && topSaveButton) topSaveButton.disabled = true;
-  if (button !== savebarButton && savebarButton) savebarButton.disabled = true;
+      const targetId = pendingTargetIds.values().next().value;
+      if (!targetId) continue;
+      pendingTargetIds.delete(targetId);
+      const target = draft.targets[targetId];
+      if (!target) continue;
+      const persistedPeriods = clone(target.timePeriods);
+      const persistedSnapshot = snapshot(persistedPeriods);
+      try {
+        const normalized = await sendRequest({
+          type: "UPDATE_SITE_TARGET",
+          targetId,
+          patch: { timePeriods: persistedPeriods }
+        });
+        if (savedConfiguration) savedConfiguration.targets[targetId] = clone(normalized);
+        const current = draft?.targets[targetId];
+        if (current && snapshot(current.timePeriods) === persistedSnapshot) {
+          draft.targets[targetId] = clone(normalized);
+        }
+      } catch (error) {
+        pendingTargetIds.add(targetId);
+        return handleAutoSaveError(error);
+      }
+    }
+    saveStatus = "saved";
+    updateSaveState();
+    return true;
+  })();
   try {
-    await sendRequest({ type: "UPDATE_SETTINGS", patch: draft });
-    for (const { siteId, enabled } of siteStateChanges) {
-      await updateManagedSite(siteId, enabled);
-    }
-    draft = cloneSettings(await sendRequest({ type: "GET_SETTINGS" }));
-    savedSnapshot = snapshot(draft);
-    updateDirtyState();
-    toast("已保存");
-  } catch (error) {
-    toast(describeError(error), "error");
+    return await saveLoop;
   } finally {
-    setButtonBusy(button, false);
-    updateDirtyState();
+    saveLoop = null;
   }
 }
 
-function getSiteStateChanges(
-  next: FocusSettings,
-  previousSnapshot: string
-): Array<{ siteId: string; enabled: boolean }> {
-  let previous: FocusSettings | null = null;
-  try {
-    previous = JSON.parse(previousSnapshot) as FocusSettings;
-  } catch {
-    // A malformed in-memory snapshot simply falls back to reconciling every site.
-  }
-  return Object.values(next.sites)
-    .filter((site) => previous?.sites[site.id]?.enabled !== site.enabled)
-    .map((site) => ({ siteId: site.id, enabled: site.enabled }));
+function handleAutoSaveError(error: unknown): false {
+  saveStatus = "error";
+  updateSaveState();
+  toast(describeError(error), "error");
+  return false;
 }
 
-function updateDirtyState(): void {
-  const dirty = isDirty();
-  if (saveState) {
-    saveState.dataset.dirty = String(dirty);
-    saveState.textContent = dirty ? "未保存" : "已保存";
+function updateSaveState(): void {
+  if (!saveState || !saveStateText) return;
+  saveState.dataset.status = saveStatus;
+  saveStateText.textContent =
+    saveStatus === "saving"
+      ? t("common.saving")
+      : saveStatus === "error"
+        ? t("common.saveFailed")
+        : saveStatus === "unsaved"
+          ? t("common.unsaved")
+          : t("common.saved");
+  saveState.querySelector(".save-state__retry")?.remove();
+  if (saveStatus === "error") {
+    const retry = element("button", {
+      className: "save-state__retry",
+      text: t("common.retry"),
+      attrs: { type: "button" }
+    });
+    retry.addEventListener("click", () => void flushAutoSave());
+    saveState.append(retry);
   }
-  if (savebar) savebar.dataset.visible = String(dirty);
-  if (topSaveButton) topSaveButton.disabled = !dirty;
-  if (savebarButton) savebarButton.disabled = !dirty;
-}
-
-function isDirty(): boolean {
-  return draft !== null && snapshot(draft) !== savedSnapshot;
 }
 
 function renderOptionsPreservingScroll(): void {
@@ -1227,27 +1018,39 @@ function renderOptionsPreservingScroll(): void {
 }
 
 function formatDays(days: Weekday[]): string {
-  const sorted = WEEKDAYS.filter(({ value }) => days.includes(value)).map(({ short }) => short);
-  if (sorted.length === 7) return "每天";
-  const weekdays = [1, 2, 3, 4, 5] satisfies Weekday[];
-  if (weekdays.every((day) => days.includes(day)) && days.length === 5) return "工作日";
-  if (days.length === 2 && days.includes(0) && days.includes(6)) return "周末";
-  return `周${sorted.join("、")}`;
+  if (days.length === 7) return t("options.everyDay");
+  if ([1, 2, 3, 4, 5].every((day) => days.includes(day as Weekday)) && days.length === 5) {
+    return t("options.weekdays");
+  }
+  if (days.length === 2 && days.includes(0) && days.includes(6)) return t("options.weekend");
+  return WEEKDAYS.filter(({ value }) => days.includes(value))
+    .map(({ shortKey }) => t(shortKey))
+    .join(" · ");
 }
 
-function crossesMidnight(schedule: TimeAccessRule): boolean {
-  return schedule.startTime > schedule.endTime;
+function formatGroupMinutes(minutes: number): string {
+  return Number.isInteger(minutes) ? String(minutes) : minutes.toFixed(1);
 }
 
-function cloneSettings(settings: FocusSettings): FocusSettings {
-  return JSON.parse(JSON.stringify(settings)) as FocusSettings;
+function clamp(value: string, min: number, max: number, fallback: number): number {
+  const parsed = Math.round(Number(value));
+  return Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback;
 }
 
-function snapshot(settings: FocusSettings): string {
-  return JSON.stringify(settings);
+function isDirty(): boolean {
+  return Boolean(
+    draft && savedConfiguration && snapshot(configurationOf(draft)) !== snapshot(savedConfiguration)
+  );
 }
 
-function createId(): string {
-  if (typeof globalThis.crypto?.randomUUID === "function") return globalThis.crypto.randomUUID();
-  return `schedule-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+function configurationOf(settings: FocusSettings): Pick<FocusSettings, "sites" | "targets"> {
+  return clone({ sites: settings.sites, targets: settings.targets });
+}
+
+function snapshot(value: unknown): string {
+  return JSON.stringify(value);
+}
+
+function clone<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
 }

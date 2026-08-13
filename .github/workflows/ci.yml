@@ -47,6 +47,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: hourleaf-store-candidates
-          path: dist/packages
+          path: |
+            dist/packages
+            dist/modules
           if-no-files-found: error
           retention-days: 7

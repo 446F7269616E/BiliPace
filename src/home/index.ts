@@ -1,10 +1,17 @@
-import { parseLocalModuleFiles } from "../modules/local/importer";
-import type {
-  LocalModuleDefinition,
-  LocalModuleFile,
-  LocalModuleSnapshot
+import {
+  createLocalModuleImportPreview,
+  LocalModuleImportError,
+  parseLocalModuleFiles
+} from "../modules/local/importer";
+import {
+  LOCAL_MODULE_IMPORT_RISK_CODE,
+  type LocalModuleDefinition,
+  type LocalModuleFile,
+  type LocalModuleSnapshot,
+  type LocalModuleWarningCode
 } from "../modules/local/types";
 import { originsFromLocalModule } from "../modules/local/validation";
+import { configureLocale, localizeDocumentTitle, t } from "../shared/i18n";
 import { sendRequest } from "../shared/messages";
 import type { DeepPartial, FocusSettings } from "../shared/types";
 import { assertAppRoot, describeError, element, setButtonBusy, toast } from "../styles/dom";
@@ -15,8 +22,10 @@ const MODULE_CATALOG_URL = "https://github.com/446F7269616E/Hourleaf/tree/main/o
 const app = assertAppRoot();
 let settings: FocusSettings | null = null;
 let localModules: LocalModuleSnapshot | null = null;
+const settingsGroupStates = new Map<string, boolean>();
 
 document.body.classList.add("home-page");
+configureLocale("system");
 void loadSettings();
 
 async function loadSettings(): Promise<void> {
@@ -26,6 +35,8 @@ async function loadSettings(): Promise<void> {
       sendRequest({ type: "GET_SETTINGS" }),
       sendRequest({ type: "GET_LOCAL_MODULES" })
     ]);
+    configureLocale((settings as FocusSettings & { locale?: string }).locale);
+    localizeDocumentTitle("settings");
     renderSettings();
   } catch (error) {
     renderError(describeError(error));
@@ -37,8 +48,8 @@ function renderLoading(): void {
     createShell(
       element("section", {
         className: "card state-view home-state",
-        attrs: { "aria-busy": "true", "aria-label": "正在加载设置" },
-        children: [element("h2", { text: "正在加载设置" })]
+        attrs: { "aria-busy": "true", "aria-label": t("settings.loading") },
+        children: [element("h2", { text: t("settings.loading") })]
       })
     )
   );
@@ -47,7 +58,7 @@ function renderLoading(): void {
 function renderError(message: string): void {
   const retry = element("button", {
     className: "btn btn--primary",
-    text: "重试",
+    text: t("common.retry"),
     attrs: { type: "button" }
   });
   retry.addEventListener("click", () => void loadSettings());
@@ -56,7 +67,11 @@ function renderError(message: string): void {
       element("section", {
         className: "card state-view home-state",
         attrs: { role: "alert" },
-        children: [element("h2", { text: "设置加载失败" }), element("p", { text: message }), retry]
+        children: [
+          element("h2", { text: t("settings.loadFailed") }),
+          element("p", { text: message }),
+          retry
+        ]
       })
     )
   );
@@ -70,8 +85,8 @@ function renderSettings(): void {
       element("header", {
         className: "home-heading",
         children: [
-          element("h1", { className: "page-title", text: "设置" }),
-          element("p", { text: "管理本地模块与插件级选项。网站时间规则请前往配置页。" })
+          element("h1", { className: "page-title", text: t("settings.title") }),
+          element("p", { text: t("settings.description") })
         ]
       }),
       element("div", {
@@ -87,7 +102,7 @@ function createModuleSettingsPanel(): HTMLElement {
   if (!localModules) return element("section");
   const importButton = element("button", {
     className: "btn btn--primary",
-    text: "导入本地模块",
+    text: t("settings.importModule"),
     attrs: { type: "button", "data-testid": "module-import-open" }
   });
   importButton.addEventListener("click", openImportDialog);
@@ -95,7 +110,7 @@ function createModuleSettingsPanel(): HTMLElement {
     left.definition.name.localeCompare(right.definition.name, "zh-CN")
   );
   const warningItems = localModules.runtime.warnings.map((warning) =>
-    element("li", { text: warning })
+    element("li", { text: describeLocalModuleWarning(warning) })
   );
 
   return element("section", {
@@ -107,9 +122,12 @@ function createModuleSettingsPanel(): HTMLElement {
         children: [
           element("div", {
             children: [
-              element("h2", { text: "模块设置", attrs: { id: "module-settings-title" } }),
+              element("h2", {
+                text: t("settings.modules"),
+                attrs: { id: "module-settings-title" }
+              }),
               element("p", {
-                text: "模块只从你明确选择的本地文件导入，不会从 GitHub 或其他地址自动下载代码。"
+                text: t("settings.modulesDescription")
               })
             ]
           }),
@@ -126,20 +144,28 @@ function createModuleSettingsPanel(): HTMLElement {
             })
           ]
         : []),
-      installations.length > 0
-        ? element("div", {
-            className: "home-module-list",
-            children: installations.map(createLocalModuleCard)
-          })
-        : element("section", {
-            className: "card home-module-empty",
-            children: [
-              element("h3", { text: "还没有本地模块" }),
-              element("p", {
-                text: "可以从模块目录下载 .json、.css 或 .user.js 文件，再由你手动检查并导入。"
+      createSettingsGroup(
+        "module-library",
+        t("settings.moduleLibrary"),
+        t("settings.moduleLibraryDescription", { count: installations.length }),
+        [
+          installations.length > 0
+            ? element("div", {
+                className: "home-module-list",
+                children: installations.map(createLocalModuleCard)
               })
-            ]
-          })
+            : element("section", {
+                className: "home-module-empty",
+                children: [
+                  element("h3", { text: t("settings.noModules") }),
+                  element("p", {
+                    text: t("settings.noModulesDescription")
+                  })
+                ]
+              })
+        ],
+        true
+      )
     ]
   });
 }
@@ -147,18 +173,18 @@ function createModuleSettingsPanel(): HTMLElement {
 function createModuleBoundaryNotice(): HTMLElement {
   const catalogLink = element("a", {
     className: "btn",
-    text: "打开 GitHub 模块目录",
+    text: t("settings.openCatalog"),
     attrs: { href: MODULE_CATALOG_URL, target: "_blank", rel: "noopener noreferrer" }
   });
   return element("aside", {
     className: "card home-module-boundary",
-    attrs: { "aria-label": "本地模块安全边界" },
+    attrs: { "aria-label": t("settings.moduleBoundary") },
     children: [
       element("div", {
         children: [
-          element("strong", { text: "商店核心与本地模块相互隔离" }),
+          element("strong", { text: t("settings.moduleBoundary") }),
           element("p", {
-            text: "核心只执行经过校验的域名策略、元素隐藏、CSS 和声明式网络规则；用户脚本只能进入浏览器提供的隔离 User Scripts 环境。"
+            text: t("settings.moduleBoundaryDescription")
           })
         ]
       }),
@@ -171,23 +197,27 @@ function createLocalModuleCard(
   installation: LocalModuleSnapshot["store"]["installations"][string]
 ): HTMLElement {
   const { definition, enabled } = installation;
-  const toggle = createToggle(`启用 ${definition.name}`, enabled, `local-module-${definition.id}`);
+  const toggle = createToggle(
+    t("settings.enableModule", { module: definition.name }),
+    enabled,
+    `local-module-${definition.id}`
+  );
   toggle.input.addEventListener("change", () => {
     void setLocalModuleEnabled(definition.id, toggle.input.checked, toggle.input);
   });
   const remove = element("button", {
     className: "btn btn--danger",
-    text: "删除",
+    text: t("common.delete"),
     attrs: { type: "button" }
   });
   remove.addEventListener("click", () => {
     openConfirmation({
-      title: `删除“${definition.name}”？`,
-      detail: "该模块的 CSS、网络规则和用户脚本注册都会从本机移除。网站时间配置不会删除。",
-      actionLabel: "删除",
+      title: t("settings.moduleRemoveQuestion", { module: definition.name }),
+      detail: t("settings.moduleRemoveDetail"),
+      actionLabel: t("common.delete"),
       onConfirm: async () => {
         localModules = await sendRequest({ type: "REMOVE_LOCAL_MODULE", moduleId: definition.id });
-        toast("本地模块已删除");
+        toast(t("settings.moduleRemoved"));
         renderSettings();
       }
     });
@@ -214,7 +244,7 @@ function createLocalModuleCard(
           }),
           element("span", {
             className: `status-chip${enabled ? " status-chip--success" : ""}`,
-            text: enabled ? "已启用" : "已停用"
+            text: enabled ? t("common.enabled") : t("common.disabled")
           }),
           element("div", { className: "home-module__actions", children: [toggle.label, remove] })
         ]
@@ -222,12 +252,16 @@ function createLocalModuleCard(
       element("div", {
         className: "home-module__details",
         children: [
-          createModuleDetail("适用网站", definition.matches.join("、")),
+          createModuleDetail(t("settings.moduleAuthor"), definition.author),
+          createModuleDetail(t("settings.moduleFormat"), definition.format),
+          createModuleDetail(t("settings.moduleSites"), definition.matches.join(", ")),
           createModuleDetail(
-            "能力",
-            definition.capabilities.length > 0 ? definition.capabilities.join("、") : "仅元数据"
+            t("settings.moduleCapabilities"),
+            definition.capabilities.length > 0
+              ? formatModuleCapabilities(definition.capabilities)
+              : t("settings.metadataOnly")
           ),
-          createModuleDetail("来源", "用户手动选择的本地文件")
+          createModuleDetail(t("settings.moduleSource"), t("settings.localFileSource"))
         ]
       })
     ]
@@ -236,8 +270,51 @@ function createLocalModuleCard(
 
 function createModuleDetail(label: string, value: string): HTMLElement {
   return element("p", {
-    children: [element("strong", { text: `${label}：` }), document.createTextNode(value)]
+    children: [element("strong", { text: `${label}: ` }), document.createTextNode(value)]
   });
+}
+
+function formatModuleCapabilities(capabilities: LocalModuleDefinition["capabilities"]): string {
+  return capabilities
+    .map((capability) =>
+      t(
+        capability === "domain-policy"
+          ? "settings.capability.domainPolicy"
+          : capability === "hide-elements"
+            ? "settings.capability.hideElements"
+            : capability === "css"
+              ? "settings.capability.css"
+              : "settings.capability.userScript"
+      )
+    )
+    .join(", ");
+}
+
+function describeLocalModuleImportError(error: LocalModuleImportError): string {
+  if (error.code === "selection-required" || error.code === "file-limit-exceeded") {
+    return t("settings.importError.selection");
+  }
+  if (
+    error.code === "invalid-file" ||
+    error.code === "duplicate-file" ||
+    error.code === "unsupported-file-type"
+  ) {
+    return t("settings.importError.file");
+  }
+  if (error.code === "invalid-reference" || error.code === "missing-reference") {
+    return t("settings.importError.reference");
+  }
+  if (error.code === "metadata-required" || error.code === "metadata-conflict") {
+    return t("settings.importError.metadata");
+  }
+  if (
+    error.code === "unsafe-css" ||
+    error.code === "unsafe-user-script" ||
+    error.code === "unsupported-dnr"
+  ) {
+    return t("settings.importError.unsafe");
+  }
+  return t("settings.importError.manifest");
 }
 
 function openImportDialog(): void {
@@ -247,36 +324,81 @@ function openImportDialog(): void {
     attrs: {
       type: "file",
       multiple: true,
-      accept: ".json,.css,.js,.user.js,application/json,text/css,text/javascript",
+      accept: ".json,.css,.user.js,application/json,text/css,text/javascript",
       "data-testid": "module-import-files"
     }
   });
   const preview = element("div", {
     className: "home-import-preview",
     attrs: { role: "status", "aria-live": "polite" },
-    text: "请选择模块清单及其引用的 CSS/脚本文件。"
+    text: t("settings.importInitial")
   });
   const confirm = element("button", {
     className: "btn btn--primary",
-    text: "确认导入并授权",
+    text: t("settings.importConfirm"),
     attrs: { type: "button", "data-testid": "module-import-confirm" }
   });
   confirm.disabled = true;
-  const cancel = element("button", { className: "btn", text: "取消", attrs: { type: "button" } });
+  const acknowledgement = element("input", {
+    attrs: { type: "checkbox", "aria-label": t("settings.importDisclaimer") }
+  });
+  const acknowledgementLabel = element("label", {
+    className: "home-import-acknowledgement",
+    children: [acknowledgement, element("span", { text: t("settings.importDisclaimer") })]
+  });
+  const cancel = element("button", {
+    className: "btn",
+    text: t("common.cancel"),
+    attrs: { type: "button" }
+  });
+  const close = element("button", {
+    className: "btn btn--icon",
+    text: "×",
+    attrs: { type: "button", title: t("common.close"), "aria-label": t("common.close") }
+  });
   const dialog = element("dialog", {
     className: "dialog home-import-dialog",
     attrs: { "aria-labelledby": "module-import-title" },
     children: [
-      element("h2", { text: "导入本地模块", attrs: { id: "module-import-title" } }),
-      element("p", {
-        text: "导入前请自行查看文件内容。Hourleaf 不会联网补齐清单引用，也不会使用 eval 执行脚本。"
-      }),
-      element("label", {
-        className: "field",
-        children: [element("span", { text: "本地模块文件" }), fileInput]
-      }),
-      preview,
-      element("div", { className: "dialog__actions", children: [cancel, confirm] })
+      element("div", {
+        className: "home-import-dialog__surface",
+        children: [
+          element("header", {
+            className: "home-import-dialog__header",
+            children: [
+              element("div", {
+                children: [
+                  element("h2", {
+                    text: t("settings.importTitle"),
+                    attrs: { id: "module-import-title" }
+                  }),
+                  element("p", { text: t("settings.importDescription") })
+                ]
+              }),
+              close
+            ]
+          }),
+          element("div", {
+            className: "home-import-dialog__body",
+            children: [
+              element("label", {
+                className: "home-import-picker",
+                children: [
+                  element("strong", { text: t("settings.importFiles") }),
+                  element("span", { text: t("settings.importFilesDescription") }),
+                  fileInput
+                ]
+              }),
+              preview,
+              acknowledgementLabel
+            ]
+          }),
+          element("footer", {
+            className: "home-import-dialog__footer",
+            children: [cancel, confirm]
+          })
+        ]
+      })
     ]
   });
   fileInput.addEventListener("change", () => {
@@ -291,22 +413,35 @@ function openImportDialog(): void {
           }))
         );
         candidate = parseLocalModuleFiles(files);
+        const importPreview = createLocalModuleImportPreview(candidate);
         preview.replaceChildren(
-          element("strong", { text: `${candidate.name} ${candidate.version}` }),
-          element("p", { text: `网站：${candidate.matches.join("、")}` }),
+          element("strong", { text: `${importPreview.name} ${importPreview.version}` }),
+          element("p", { text: `${t("settings.moduleAuthor")}: ${importPreview.author}` }),
+          element("p", { text: `${t("settings.moduleFormat")}: ${importPreview.format}` }),
           element("p", {
-            text: `能力：${candidate.capabilities.join("、") || "仅元数据"}`
+            text: `${t("settings.moduleSites")}: ${importPreview.matches.join(", ")}`
+          }),
+          element("p", {
+            text: `${t("settings.moduleCapabilities")}: ${formatModuleCapabilities(importPreview.capabilities) || t("settings.metadataOnly")}`
           })
         );
-        confirm.disabled = false;
+        confirm.disabled = !acknowledgement.checked;
       } catch (error) {
-        preview.textContent = describeError(error);
+        preview.textContent =
+          error instanceof LocalModuleImportError
+            ? describeLocalModuleImportError(error)
+            : describeError(error);
       }
     })();
   });
-  cancel.addEventListener("click", () => dialog.close());
+  acknowledgement.addEventListener("change", () => {
+    confirm.disabled = !candidate || !acknowledgement.checked;
+  });
+  const closeDialog = () => dialog.close();
+  cancel.addEventListener("click", closeDialog);
+  close.addEventListener("click", closeDialog);
   confirm.addEventListener("click", () => {
-    if (!candidate) return;
+    if (!candidate || !acknowledgement.checked) return;
     void importLocalModule(candidate, confirm, dialog);
   });
   dialog.addEventListener("close", () => dialog.remove());
@@ -325,22 +460,30 @@ async function importLocalModule(
       definition.userScript.trim() &&
       localModules?.runtime.userScripts === "disabled-by-platform"
     ) {
-      throw new Error("Safari 商店版不导入或执行用户脚本；请移除 .user.js 后再导入");
+      throw new Error(t("settings.safariScriptUnsupported"));
     }
     const granted = await requestLocalModulePermissions(
       definition.matches,
       definition.userScript.trim().length > 0
     );
-    if (!granted) throw new Error("未获得模块所需的网站权限");
+    if (!granted) throw new Error(t("settings.permissionDenied"));
     for (const origin of originsFromLocalModule(definition)) await addManagedSite(origin);
-    localModules = await sendRequest({ type: "IMPORT_LOCAL_MODULE", module: definition });
+    localModules = await sendRequest({
+      type: "IMPORT_LOCAL_MODULE",
+      module: definition,
+      riskAcknowledgement: LOCAL_MODULE_IMPORT_RISK_CODE
+    });
     localModules = await sendRequest({
       type: "SET_LOCAL_MODULE_ENABLED",
       moduleId: definition.id,
       enabled: true
     });
     dialog.close();
-    toast(localModules.runtime.warnings[0] ?? "本地模块已导入并启用");
+    toast(
+      localModules.runtime.warnings[0]
+        ? describeLocalModuleWarning(localModules.runtime.warnings[0])
+        : t("settings.moduleImported")
+    );
     renderSettings();
   } catch (error) {
     toast(describeError(error), "error");
@@ -357,7 +500,13 @@ async function setLocalModuleEnabled(
   control.disabled = true;
   try {
     localModules = await sendRequest({ type: "SET_LOCAL_MODULE_ENABLED", moduleId, enabled });
-    toast(localModules.runtime.warnings[0] ?? (enabled ? "模块已启用" : "模块已停用"));
+    toast(
+      localModules.runtime.warnings[0]
+        ? describeLocalModuleWarning(localModules.runtime.warnings[0])
+        : enabled
+          ? t("settings.moduleEnabled")
+          : t("settings.moduleDisabled")
+    );
     renderSettings();
   } catch (error) {
     toast(describeError(error), "error");
@@ -365,55 +514,200 @@ async function setLocalModuleEnabled(
   }
 }
 
+function describeLocalModuleWarning(warning: LocalModuleWarningCode): string {
+  return t(
+    warning === "unsafe-user-script"
+      ? "settings.warning.unsafeUserScript"
+      : warning === "safari-user-script-disabled"
+        ? "settings.warning.safariUserScriptDisabled"
+        : warning === "user-scripts-api-unavailable"
+          ? "settings.warning.userScriptsApiUnavailable"
+          : warning === "user-scripts-permission-required"
+            ? "settings.warning.userScriptsPermissionRequired"
+            : "settings.warning.legacyDnrCleanupFailed"
+  );
+}
+
 function createPluginSettingsPanel(): HTMLElement {
   if (!settings) return element("section");
-  const focusToggle = createToggle("启用时间管理", settings.enabled, "settings-focus-toggle");
+  const focusToggle = createToggle(
+    t("settings.focusEnabled"),
+    settings.enabled,
+    "settings-focus-toggle"
+  );
   focusToggle.input.addEventListener("change", () => {
     void updateSettings({ enabled: focusToggle.input.checked }, focusToggle.input);
   });
-  const watchDuration = element("input", {
+  const locale = element("select", {
+    className: "select",
+    attrs: {
+      value: settings.locale,
+      "aria-label": t("settings.language")
+    },
+    children: [
+      element("option", { attrs: { value: "system" }, text: t("locale.system") }),
+      element("option", { attrs: { value: "zh-CN" }, text: t("locale.zhCN") }),
+      element("option", { attrs: { value: "en" }, text: t("locale.en") })
+    ]
+  });
+  locale.addEventListener("change", () => {
+    void updateSettings({ locale: locale.value as FocusSettings["locale"] }, locale);
+  });
+  const autoComplete = createToggle(
+    t("settings.planAutoComplete"),
+    settings.planMode.autoCompleteOnStart,
+    "settings-plan-auto-complete"
+  );
+  autoComplete.input.addEventListener("change", () => {
+    void updateSettings(
+      { planMode: { autoCompleteOnStart: autoComplete.input.checked } },
+      autoComplete.input
+    );
+  });
+  const iconMinutes = createToggle(
+    t("settings.showRemainingMinutesOnIcon"),
+    settings.showRemainingMinutesOnIcon,
+    "settings-show-remaining-minutes"
+  );
+  iconMinutes.input.addEventListener("change", () => {
+    void updateSettings(
+      { showRemainingMinutesOnIcon: iconMinutes.input.checked },
+      iconMinutes.input
+    );
+  });
+  const endView = element("select", {
+    className: "select",
+    attrs: { value: settings.endPage.view, "aria-label": t("settings.endPageView") },
+    children: [
+      element("option", {
+        attrs: { value: "dashboard" },
+        text: t("settings.endView.dashboard")
+      }),
+      element("option", { attrs: { value: "message" }, text: t("settings.endView.message") }),
+      element("option", { attrs: { value: "minimal" }, text: t("settings.endView.minimal") })
+    ]
+  });
+  endView.addEventListener("change", () => {
+    void updateSettings(
+      { endPage: { view: endView.value as FocusSettings["endPage"]["view"] } },
+      endView
+    );
+  });
+  const motivation = element("textarea", {
+    className: "input home-end-message",
+    attrs: {
+      maxlength: "500",
+      rows: "3",
+      placeholder: t("settings.motivationPlaceholder"),
+      "aria-label": t("settings.motivation")
+    },
+    text: settings.endPage.motivationalMessage
+  });
+  motivation.addEventListener("change", () => {
+    void updateSettings({ endPage: { motivationalMessage: motivation.value.trim() } }, motivation);
+  });
+  const unlockMethod = element("select", {
+    className: "select",
+    attrs: {
+      value: settings.endPage.groupUnlock.method,
+      "aria-label": t("settings.groupUnlock")
+    },
+    children: [
+      element("option", { attrs: { value: "none" }, text: t("settings.unlock.none") }),
+      element("option", { attrs: { value: "wait" }, text: t("settings.unlock.wait") }),
+      element("option", { attrs: { value: "math" }, text: t("settings.unlock.math") }),
+      element("option", { attrs: { value: "password" }, text: t("settings.unlock.password") })
+    ]
+  });
+  const currentUnlockMethod = settings.endPage.groupUnlock.method;
+  const hasPasswordVerifier = settings.endPage.groupUnlock.passwordVerifier.length === 64;
+  unlockMethod.addEventListener("change", () => {
+    if (unlockMethod.value === "password" && !hasPasswordVerifier) {
+      unlockMethod.value = currentUnlockMethod;
+      toast(t("settings.passwordRequired"), "error");
+      password.focus();
+      return;
+    }
+    void updateSettings(
+      {
+        endPage: {
+          groupUnlock: {
+            method: unlockMethod.value as FocusSettings["endPage"]["groupUnlock"]["method"]
+          }
+        }
+      },
+      unlockMethod
+    );
+  });
+  const waitMinutes = element("input", {
     className: "input",
     attrs: {
       type: "number",
       min: "1",
-      max: "360",
+      max: "120",
       step: "1",
-      value: settings.planMode.watchDurationMinutes,
-      "aria-label": "计划单次访问分钟数"
+      value: settings.endPage.groupUnlock.waitMinutes,
+      "aria-label": t("settings.waitMinutes")
     }
   });
-  watchDuration.addEventListener("change", () => {
-    void updatePlanDuration(clampNumberInput(watchDuration, 1, 360), watchDuration);
+  waitMinutes.addEventListener("change", () => {
+    void updateSettings(
+      {
+        endPage: {
+          groupUnlock: { waitMinutes: clampNumberInput(waitMinutes, 1, 120) }
+        }
+      },
+      waitMinutes
+    );
+  });
+  const password = element("input", {
+    className: "input",
+    attrs: {
+      type: "password",
+      maxlength: "128",
+      autocomplete: "new-password",
+      placeholder: t("settings.passwordPlaceholder"),
+      "aria-label": t("settings.password")
+    }
+  });
+  password.addEventListener("change", () => {
+    if (!password.value) return;
+    void (async () => {
+      const verifier = await sha256(password.value);
+      password.value = "";
+      await updateSettings({ endPage: { groupUnlock: { passwordVerifier: verifier } } }, password);
+    })();
   });
   const clearUsage = element("button", {
     className: "btn btn--danger",
-    text: "清空使用时间",
+    text: t("settings.clearUsage"),
     attrs: { type: "button" }
   });
   clearUsage.addEventListener("click", () => {
     openConfirmation({
-      title: "清空使用时间？",
-      detail: "已记录的本地使用时间会被删除。",
-      actionLabel: "清空",
+      title: t("settings.clearUsageQuestion"),
+      detail: t("settings.clearUsageDetail"),
+      actionLabel: t("settings.clearUsage"),
       onConfirm: async () => {
         await sendRequest({ type: "CLEAR_USAGE" });
-        toast("使用时间已清空");
+        toast(t("settings.cleared"));
       }
     });
   });
   const resetSettings = element("button", {
     className: "btn",
-    text: "恢复默认设置",
+    text: t("settings.reset"),
     attrs: { type: "button" }
   });
   resetSettings.addEventListener("click", () => {
     openConfirmation({
-      title: "恢复默认设置？",
-      detail: "时间设置将恢复默认值；本地模块仍会保留。",
-      actionLabel: "恢复",
+      title: t("settings.resetQuestion"),
+      detail: t("settings.resetDetail"),
+      actionLabel: t("settings.reset"),
       onConfirm: async () => {
         settings = await sendRequest({ type: "RESET_SETTINGS" });
-        toast("已恢复默认设置");
+        configureLocale(settings.locale);
+        toast(t("settings.resetDone"));
         renderSettings();
       }
     });
@@ -425,29 +719,118 @@ function createPluginSettingsPanel(): HTMLElement {
     children: [
       createPanelHeading(
         "plugin-settings-title",
-        "插件其他设置",
-        "这里的总开关影响所有时间规则，因此只在完整设置页提供。"
+        t("settings.other"),
+        t("settings.otherDescription")
       ),
       element("div", {
         className: "home-plugin-card card",
         children: [
-          createSettingRow("启用时间管理", "关闭后暂停所有计时、名单与时间规则", focusToggle.label),
-          createSettingRow(
-            "计划单次访问",
-            "开始一个计划项目后允许访问的时长",
-            element("label", {
-              className: "home-number-control",
-              children: [watchDuration, element("span", { text: "分钟" })]
-            })
+          createSettingsGroup(
+            "general",
+            t("settings.general"),
+            t("settings.generalDescription"),
+            [
+              createSettingRow(
+                t("settings.focusEnabled"),
+                t("settings.focusEnabledDescription"),
+                focusToggle.label
+              ),
+              createSettingRow(t("settings.language"), t("settings.languageDescription"), locale),
+              createSettingRow(
+                t("settings.planAutoComplete"),
+                t("settings.planAutoCompleteDescription"),
+                autoComplete.label
+              ),
+              createSettingRow(
+                t("settings.showRemainingMinutesOnIcon"),
+                t("settings.showRemainingMinutesOnIconDescription"),
+                iconMinutes.label
+              )
+            ],
+            true
           ),
-          element("div", {
-            className: "home-settings__actions",
-            children: [resetSettings, clearUsage]
-          })
+          createSettingsGroup(
+            "end-page",
+            t("settings.endPage"),
+            t("settings.endPageDescription"),
+            [
+              createSettingRow(
+                t("settings.endPageView"),
+                t("settings.endPageViewDescription"),
+                endView
+              ),
+              createSettingRow(
+                t("settings.motivation"),
+                t("settings.motivationDescription"),
+                motivation
+              ),
+              createSettingRow(
+                t("settings.groupUnlock"),
+                t("settings.groupUnlockDescription"),
+                unlockMethod
+              ),
+              ...(settings.endPage.groupUnlock.method === "wait"
+                ? [
+                    createSettingRow(
+                      t("settings.waitMinutes"),
+                      t("settings.waitMinutesDescription"),
+                      element("label", {
+                        className: "home-number-control",
+                        children: [waitMinutes, element("span", { text: t("common.minutes") })]
+                      })
+                    )
+                  ]
+                : []),
+              createSettingRow(t("settings.password"), t("settings.passwordStored"), password)
+            ],
+            true
+          ),
+          createSettingsGroup(
+            "data-management",
+            t("settings.dataManagement"),
+            t("settings.dataManagementDescription"),
+            [
+              element("div", {
+                className: "home-settings__actions",
+                children: [resetSettings, clearUsage]
+              })
+            ],
+            false
+          )
         ]
       })
     ]
   });
+}
+
+function createSettingsGroup(
+  id: string,
+  title: string,
+  description: string,
+  children: HTMLElement[],
+  open: boolean
+): HTMLDetailsElement {
+  const group = element("details", {
+    className: "home-settings-group",
+    attrs: { open: settingsGroupStates.get(id) ?? open, "data-settings-group": id },
+    children: [
+      element("summary", {
+        className: "home-settings-group__summary",
+        children: [
+          element("div", {
+            children: [element("h3", { text: title }), element("p", { text: description })]
+          }),
+          element("span", {
+            className: "home-settings-group__chevron",
+            attrs: { "aria-hidden": "true" }
+          })
+        ]
+      }),
+      element("div", { className: "home-settings-group__content", children })
+    ]
+  });
+  group.addEventListener("toggle", () => settingsGroupStates.set(id, group.open));
+  return group;
 }
 
 function createPanelHeading(id: string, title: string, description: string): HTMLElement {
@@ -471,12 +854,14 @@ function createSettingRow(title: string, description: string, control: HTMLEleme
 
 async function updateSettings(
   patch: DeepPartial<FocusSettings>,
-  control: HTMLInputElement
+  control: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement
 ): Promise<void> {
   control.disabled = true;
   try {
     settings = await sendRequest({ type: "UPDATE_SETTINGS", patch });
-    toast("已保存");
+    configureLocale(settings.locale);
+    localizeDocumentTitle("settings");
+    toast(t("common.saved"));
     renderSettings();
   } catch (error) {
     toast(describeError(error), "error");
@@ -484,20 +869,10 @@ async function updateSettings(
   }
 }
 
-async function updatePlanDuration(
-  watchDurationMinutes: number,
-  control: HTMLInputElement
-): Promise<void> {
-  control.disabled = true;
-  try {
-    const state = await sendRequest({ type: "SET_PLAN_MODE", watchDurationMinutes });
-    if (settings) settings = { ...settings, planMode: state.settings };
-    toast("已保存");
-    renderSettings();
-  } catch (error) {
-    toast(describeError(error), "error");
-    await loadSettings();
-  }
+async function sha256(value: string): Promise<string> {
+  const bytes = new TextEncoder().encode(value);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function createShell(content: HTMLElement): HTMLElement {
@@ -539,7 +914,11 @@ function openConfirmation(options: ConfirmationOptions): void {
       element("div", {
         className: "dialog__actions",
         children: [
-          element("button", { className: "btn", text: "取消", attrs: { type: "button" } }),
+          element("button", {
+            className: "btn",
+            text: t("common.cancel"),
+            attrs: { type: "button" }
+          }),
           element("button", {
             className: "btn btn--danger",
             text: options.actionLabel,

@@ -15,9 +15,10 @@ import type {
   LocalModuleRuntimeStatus,
   LocalModuleSnapshot,
   LocalModuleStore,
+  LocalModuleWarningCode,
   LocalPageRules
 } from "./types";
-import { localModuleMatches } from "./validation";
+import { getLocalModuleContentSafetyIssue, localModuleMatches } from "./validation";
 
 const USER_SCRIPT_PREFIX = "hourleaf-local-";
 const DNR_RULE_ID_START = 2_000_000;
@@ -26,7 +27,7 @@ declare const __HOURLEAF_BROWSER_TARGET__: Exclude<LocalModulePlatform, "unknown
 
 export class LocalModuleService {
   private writeQueue: Promise<unknown> = Promise.resolve();
-  private lastWarnings: string[] = [];
+  private lastWarnings: LocalModuleWarningCode[] = [];
 
   constructor(
     private readonly repository = new LocalModuleRepository(),
@@ -86,26 +87,36 @@ export class LocalModuleService {
   }
 
   private async reconcile(store: LocalModuleStore): Promise<LocalModuleSnapshot> {
-    const warnings: string[] = [];
+    const warnings: LocalModuleWarningCode[] = [];
     await this.reconcileUserScripts(store, warnings);
-    await this.reconcileDnr(store, warnings);
+    await this.reconcileDnr(warnings);
     this.lastWarnings = warnings;
     return { store, runtime: this.runtimeStatus() };
   }
 
-  private async reconcileUserScripts(store: LocalModuleStore, warnings: string[]): Promise<void> {
-    const enabledScripts = Object.values(store.installations).filter(
+  private async reconcileUserScripts(
+    store: LocalModuleStore,
+    warnings: LocalModuleWarningCode[]
+  ): Promise<void> {
+    const scriptInstallations = Object.values(store.installations).filter(
       (installation) => installation.enabled && installation.definition.userScript.trim()
     );
+    const enabledScripts = scriptInstallations.filter(
+      (installation) =>
+        getLocalModuleContentSafetyIssue("", installation.definition.userScript) === null
+    );
+    if (enabledScripts.length !== scriptInstallations.length) {
+      warnings.push("unsafe-user-script");
+    }
     if (this.platform === "safari") {
       if (enabledScripts.length > 0) {
-        warnings.push("Safari 商店版不会执行已存储模块中的用户脚本。");
+        warnings.push("safari-user-script-disabled");
       }
       return;
     }
     if (!hasUserScriptsApi()) {
       if (enabledScripts.length > 0) {
-        warnings.push("当前浏览器未开放 User Scripts API；CSS、元素隐藏和网络规则仍会生效。");
+        warnings.push("user-scripts-api-unavailable");
       }
       return;
     }
@@ -127,47 +138,21 @@ export class LocalModuleService {
         }))
       );
     } catch {
-      warnings.push("用户脚本尚未启用。请在浏览器扩展详情中允许用户脚本后重新启用模块。");
+      warnings.push("user-scripts-permission-required");
     }
   }
 
-  private async reconcileDnr(store: LocalModuleStore, warnings: string[]): Promise<void> {
-    const definitions = Object.values(store.installations)
-      .filter((installation) => installation.enabled)
-      .map((installation) => installation.definition)
-      .filter((definition) => definition.dnrRules.length > 0);
-    if (!hasDeclarativeNetRequestApi()) {
-      if (definitions.length > 0) warnings.push("当前浏览器不支持动态声明式网络规则。");
-      return;
-    }
+  private async reconcileDnr(warnings: LocalModuleWarningCode[]): Promise<void> {
+    if (!hasDeclarativeNetRequestApi()) return;
     try {
       const current = await declarativeNetRequestGetDynamicRules();
       const removeRuleIds = current
         .map((rule) => rule.id)
         .filter((id) => id >= DNR_RULE_ID_START && id <= DNR_RULE_ID_END);
-      let nextId = DNR_RULE_ID_START;
-      const addRules = definitions.flatMap((definition) => {
-        const initiatorDomains = definition.matches.map(
-          (pattern) => new URL(pattern.slice(0, -2)).hostname
-        );
-        return definition.dnrRules.map((rule) => ({
-          id: nextId++,
-          priority: 1,
-          action: { type: rule.action },
-          condition: {
-            urlFilter: rule.urlFilter,
-            initiatorDomains,
-            resourceTypes: rule.resourceTypes
-          }
-        }));
-      });
-      if (removeRuleIds.length === 0 && addRules.length === 0) return;
-      await declarativeNetRequestUpdateDynamicRules({
-        ...(removeRuleIds.length > 0 ? { removeRuleIds } : {}),
-        ...(addRules.length > 0 ? { addRules } : {})
-      });
+      if (removeRuleIds.length === 0) return;
+      await declarativeNetRequestUpdateDynamicRules({ removeRuleIds });
     } catch {
-      warnings.push("声明式网络规则未能应用；其他模块能力不受影响。");
+      warnings.push("legacy-dnr-cleanup-failed");
     }
   }
 
@@ -179,7 +164,7 @@ export class LocalModuleService {
           : hasUserScriptsApi()
             ? "available"
             : "permission-required",
-      declarativeNetRequest: hasDeclarativeNetRequestApi() ? "available" : "unsupported",
+      declarativeNetRequest: "unsupported",
       warnings: [...this.lastWarnings]
     };
   }

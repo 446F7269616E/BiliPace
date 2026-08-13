@@ -1,10 +1,11 @@
 export const LOCAL_MODULE_SCHEMA_VERSION = 1 as const;
+export const LOCAL_MODULE_FORMAT = "hourleaf.local-module" as const;
+export const LOCAL_MODULE_IMPORT_RISK_CODE = "review-content-and-assume-risk" as const;
 
 export const LOCAL_MODULE_CAPABILITIES = [
   "domain-policy",
   "hide-elements",
   "css",
-  "declarative-net-request",
   "user-script"
 ] as const;
 
@@ -44,8 +45,11 @@ export interface LocalDnrRule {
  */
 export interface LocalModuleDefinition {
   schemaVersion: typeof LOCAL_MODULE_SCHEMA_VERSION;
+  /** Stable content identifier; do not infer the format from a file extension. */
+  format: typeof LOCAL_MODULE_FORMAT;
   id: string;
   name: string;
+  author: string;
   version: string;
   description: string;
   /** Exact HTTP(S) origin match patterns. Wildcard hosts are intentionally rejected. */
@@ -76,10 +80,17 @@ export type LocalModuleRuntimeState =
 
 export type LocalModulePlatform = "chromium" | "firefox" | "safari" | "unknown";
 
+export type LocalModuleWarningCode =
+  | "unsafe-user-script"
+  | "safari-user-script-disabled"
+  | "user-scripts-api-unavailable"
+  | "user-scripts-permission-required"
+  | "legacy-dnr-cleanup-failed";
+
 export interface LocalModuleRuntimeStatus {
   userScripts: LocalModuleRuntimeState;
   declarativeNetRequest: "available" | "unsupported";
-  warnings: string[];
+  warnings: LocalModuleWarningCode[];
 }
 
 export interface LocalModuleSnapshot {
@@ -97,3 +108,42 @@ export interface LocalModuleFile {
   name: string;
   text: string;
 }
+
+/**
+ * Ephemeral data for the confirmation step. It is intentionally not persisted:
+ * the normalized definition already contains every field needed at runtime.
+ */
+export interface LocalModuleImportPreview {
+  id: string;
+  name: string;
+  author: string;
+  format: typeof LOCAL_MODULE_FORMAT;
+  version: string;
+  matches: string[];
+  capabilities: LocalModuleCapability[];
+  hasUserScript: boolean;
+  riskDisclosure: {
+    code: typeof LOCAL_MODULE_IMPORT_RISK_CODE;
+    acknowledgementRequired: true;
+  };
+}
+
+export type LocalModuleImportErrorCode =
+  | "selection-required"
+  | "file-limit-exceeded"
+  | "invalid-file"
+  | "duplicate-file"
+  | "unsupported-file-type"
+  | "multiple-manifests"
+  | "invalid-json"
+  | "invalid-manifest"
+  | "invalid-reference"
+  | "missing-reference"
+  | "metadata-required"
+  | "metadata-conflict"
+  | "author-required"
+  | "format-required"
+  | "unsupported-format"
+  | "unsupported-dnr"
+  | "unsafe-css"
+  | "unsafe-user-script";

@@ -1,12 +1,9 @@
 import { sendRequest } from "../shared/messages";
+import { t } from "../shared/i18n";
 
 export async function addManagedSite(url: string): Promise<void> {
   const result = await sendRequest({ type: "ADD_MANAGED_SITE", url });
-  if (!result.granted) throw new Error("未获得网站权限");
-}
-
-export async function updateManagedSite(siteId: string, enabled: boolean): Promise<void> {
-  await sendRequest({ type: "UPDATE_MANAGED_SITE", siteId, patch: { enabled } });
+  if (!result.granted) throw new Error(t("options.permissionDenied"));
 }
 
 export async function removeManagedSite(siteId: string): Promise<void> {
@@ -18,12 +15,12 @@ export function normalizeWebsiteInput(value: string): {
   permissionPattern: string;
 } {
   const trimmed = value.trim();
-  if (!trimmed || trimmed.length > 2_048) throw new Error("请输入有效域名或网址");
+  if (!trimmed || trimmed.length > 2_048) throw new Error(t("options.invalidWebsite"));
   let url: URL;
   try {
     url = new URL(trimmed.includes("://") ? trimmed : `https://${trimmed}`);
   } catch {
-    throw new Error("请输入有效域名或网址");
+    throw new Error(t("options.invalidWebsite"));
   }
   if (
     (url.protocol !== "http:" && url.protocol !== "https:") ||
@@ -31,7 +28,7 @@ export function normalizeWebsiteInput(value: string): {
     url.username ||
     url.password
   ) {
-    throw new Error("仅支持 HTTP 和 HTTPS 网站");
+    throw new Error(t("options.httpOnly"));
   }
   return { origin: url.origin, permissionPattern: `${url.origin}/*` };
 }

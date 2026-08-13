@@ -50,14 +50,20 @@
     transform var(--duration-fast) var(--ease-out);
 }
 
-.app-navigation__link:hover,
 .app-navigation__link:focus-visible {
   color: var(--color-text);
   background: var(--color-surface-soft);
 }
 
 .app-navigation__link:active {
-  transform: translateY(1px);
+  transform: scale(0.97);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .app-navigation__link:hover {
+    color: var(--color-text);
+    background: var(--color-surface-soft);
+  }
 }
 
 .app-navigation__link[aria-current="page"] {

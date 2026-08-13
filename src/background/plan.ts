@@ -1,4 +1,5 @@
 import {
+  isPlanFlowExtensionMinutes,
   normalizePlanItemInput,
   normalizePlanUrl,
   type NormalizedPlanItemInput
@@ -14,6 +15,8 @@ import type {
   PlanState,
   PlanWatchGrant
 } from "../shared/types";
+
+export type PlanFlowContinuation = { kind: "minutes"; minutes: number } | { kind: "video-end" };
 
 export interface PlanImportResult {
   state: PlanState;
@@ -82,27 +85,28 @@ export class PlanService {
   }
 
   async update(id: string, patch: PlanItemPatch): Promise<PlanState> {
-    let previousUrl = "";
-    let nextUrl = "";
+    let shouldClearGrant = false;
     await this.queueRepository.update((queue) => {
       const item = requireItem(queue.items, id);
-      previousUrl = item.url;
+      const previousAuthorization = planItemAuthorizationIdentity(item);
       const normalized = requireNormalizedInput({
         url: patch.url ?? item.url,
         ...(patch.bvid !== undefined ? { bvid: patch.bvid } : item.bvid ? { bvid: item.bvid } : {}),
         ...(patch.url !== undefined ? { url: patch.url } : {}),
         title: patch.title ?? item.title,
-        source: patch.source ?? item.source
+        source: patch.source ?? item.source,
+        scheduledDurationMinutes: patch.scheduledDurationMinutes ?? item.scheduledDurationMinutes,
+        completionMode: patch.completionMode ?? item.completionMode
       });
       if (
         queue.items.some((candidate) => candidate.id !== id && candidate.url === normalized.url)
       ) {
         throw new Error("This page is already in the plan");
       }
-      nextUrl = normalized.url;
       Object.assign(item, persistedPlanInput(normalized));
+      shouldClearGrant = previousAuthorization !== planItemAuthorizationIdentity(item);
     });
-    if (previousUrl !== nextUrl) await this.clearGrantForItem(id);
+    if (shouldClearGrant) await this.clearGrantForItem(id);
     return this.getState();
   }
 
@@ -167,17 +171,29 @@ export class PlanService {
       origin: item.origin,
       ...(item.bvid ? { bvid: item.bvid } : {}),
       grantedAt,
-      expiresAt: grantedAt + settings.planMode.watchDurationMinutes * 60_000
+      expiresAt: grantedAt + item.scheduledDurationMinutes * 60_000,
+      scheduledDurationMinutes: item.scheduledDurationMinutes,
+      completionMode: item.completionMode
     };
     await this.accessRepository.update((store) => {
       store.activeGrant = grant;
     });
     try {
       await this.settingsRepository.update({ planMode: { enabled: true } });
+      if (settings.planMode.autoCompleteOnStart) {
+        await this.queueRepository.update((currentQueue) => {
+          const startedItem = requireItem(currentQueue.items, item.id);
+          startedItem.status = "completed";
+          startedItem.completedAt = this.now();
+        });
+      }
     } catch (error) {
-      await this.accessRepository.update((store) => {
-        if (store.activeGrant?.itemId === item.id) delete store.activeGrant;
-      });
+      await Promise.all([
+        this.accessRepository.update((store) => {
+          if (store.activeGrant?.itemId === item.id) delete store.activeGrant;
+        }),
+        this.settingsRepository.update({ planMode: { enabled: false } })
+      ]);
       throw error;
     }
     return { state: await this.getState(), url: item.url, expiresAt: grant.expiresAt };
@@ -208,7 +224,20 @@ export class PlanService {
         ...(legacyIdentity ? { bvid: legacyIdentity } : {})
       };
     }
-    if (grant.expiresAt <= this.now()) {
+    if (grant.flowContinuationKind !== "video-end" && grant.expiresAt <= this.now()) {
+      if (grant.completionMode === "flow" && !grant.flowContinuationKind) {
+        return {
+          planModeEnabled: true,
+          allowed: false,
+          reason: "expired",
+          itemId: grant.itemId,
+          completionMode: "flow",
+          expiredAt: grant.expiresAt,
+          flowDecisionRequired: true,
+          ...(navigationUrl ? { url: navigationUrl } : {}),
+          ...(legacyIdentity ? { bvid: legacyIdentity } : {})
+        };
+      }
       await Promise.all([
         this.accessRepository.update((store) => {
           delete store.activeGrant;
@@ -217,17 +246,18 @@ export class PlanService {
       ]);
       return {
         planModeEnabled: true,
-        allowed: false,
+        allowed: grant.completionMode === "lenient",
         reason: "expired",
+        itemId: grant.itemId,
+        completionMode: grant.completionMode,
+        expiredAt: grant.expiresAt,
+        ...(grant.completionMode === "flow" ? { flowDecisionRequired: false } : {}),
         ...(navigationUrl ? { url: navigationUrl } : {}),
         ...(legacyIdentity ? { bvid: legacyIdentity } : {})
       };
     }
     const item = queue.items.find(
-      (candidate) =>
-        candidate.id === grant.itemId &&
-        candidate.url === grant.url &&
-        candidate.status === "pending"
+      (candidate) => candidate.id === grant.itemId && candidate.url === grant.url
     );
     const identityMatches = navigationUrl
       ? grant.url === navigationUrl
@@ -245,6 +275,7 @@ export class PlanService {
         planModeEnabled: true,
         allowed: false,
         reason: "not-authorized",
+        completionMode: grant.completionMode,
         ...(navigationUrl ? { url: navigationUrl } : {}),
         ...(legacyIdentity ? { bvid: legacyIdentity } : {})
       };
@@ -253,11 +284,105 @@ export class PlanService {
       planModeEnabled: true,
       allowed: true,
       reason: "authorized",
+      itemId: item.id,
       url: item.url,
       origin: item.origin,
       ...(item.bvid ? { bvid: item.bvid } : {}),
-      expiresAt: grant.expiresAt
+      expiresAt: grant.expiresAt,
+      completionMode: grant.completionMode,
+      ...(grant.flowContinuationKind ? { flowContinuationKind: grant.flowContinuationKind } : {})
     };
+  }
+
+  async continueFlow(
+    itemId: string,
+    continuation: PlanFlowContinuation,
+    expectedUrl?: string
+  ): Promise<{
+    state: PlanState;
+    url: string;
+    expiresAt: number;
+    continuationKind: PlanFlowContinuation["kind"];
+  }> {
+    const [queue, access] = await Promise.all([
+      this.queueRepository.get(),
+      this.accessRepository.get()
+    ]);
+    const item = requireItem(queue.items, itemId);
+    const grant = access.activeGrant;
+    const normalizedExpectedUrl = expectedUrl ? normalizePlanUrl(expectedUrl)?.href : undefined;
+    if (
+      !grant ||
+      grant.itemId !== item.id ||
+      grant.url !== item.url ||
+      grant.completionMode !== "flow" ||
+      grant.flowContinuationKind !== undefined ||
+      grant.expiresAt > this.now() ||
+      (expectedUrl !== undefined && normalizedExpectedUrl !== grant.url)
+    ) {
+      throw new Error("This plan item is not waiting for a flow decision");
+    }
+    if (continuation.kind === "minutes" && !isPlanFlowExtensionMinutes(continuation.minutes)) {
+      throw new Error("Flow extension must be between 1 and 15 minutes");
+    }
+    const grantedAt = this.now();
+    const expiresAt =
+      continuation.kind === "minutes"
+        ? grantedAt + continuation.minutes * 60_000
+        : Number.MAX_SAFE_INTEGER;
+    await this.accessRepository.update((store) => {
+      const activeGrant = store.activeGrant;
+      if (
+        !activeGrant ||
+        activeGrant.itemId !== item.id ||
+        activeGrant.url !== item.url ||
+        activeGrant.completionMode !== "flow" ||
+        activeGrant.flowContinuationKind !== undefined ||
+        activeGrant.expiresAt > grantedAt
+      ) {
+        throw new Error("The flow decision is no longer active");
+      }
+      store.activeGrant = {
+        ...activeGrant,
+        grantedAt,
+        expiresAt,
+        flowContinuationKind: continuation.kind
+      };
+    });
+    try {
+      await this.settingsRepository.update({ planMode: { enabled: true } });
+    } catch (error) {
+      await this.accessRepository.update((store) => {
+        if (store.activeGrant?.itemId === item.id && store.activeGrant.expiresAt === expiresAt) {
+          delete store.activeGrant;
+        }
+      });
+      throw error;
+    }
+    return {
+      state: await this.getState(),
+      url: item.url,
+      expiresAt,
+      continuationKind: continuation.kind
+    };
+  }
+
+  async revokeFlow(itemId: string, expectedUrl?: string): Promise<PlanState> {
+    const normalizedExpectedUrl = expectedUrl ? normalizePlanUrl(expectedUrl)?.href : undefined;
+    await this.accessRepository.update((store) => {
+      const grant = store.activeGrant;
+      if (
+        !grant ||
+        grant.itemId !== itemId ||
+        grant.completionMode !== "flow" ||
+        (expectedUrl !== undefined && normalizedExpectedUrl !== grant.url)
+      ) {
+        throw new Error("This flow continuation is no longer active");
+      }
+      delete store.activeGrant;
+    });
+    await this.settingsRepository.update({ planMode: { enabled: false } });
+    return this.getState();
   }
 
   async importItems(
@@ -298,10 +423,15 @@ function validGrantForQueue(
   items: PlanItem[],
   now: number
 ): PlanWatchGrant | undefined {
-  if (!grant || grant.expiresAt <= now) return undefined;
-  return items.some(
-    (item) => item.id === grant.itemId && item.url === grant.url && item.status === "pending"
-  )
+  if (
+    !grant ||
+    (grant.flowContinuationKind !== "video-end" &&
+      grant.expiresAt <= now &&
+      (grant.completionMode !== "flow" || grant.flowContinuationKind !== undefined))
+  ) {
+    return undefined;
+  }
+  return items.some((item) => item.id === grant.itemId && item.url === grant.url)
     ? grant
     : undefined;
 }
@@ -317,7 +447,7 @@ function requireNormalizedInput(
   fallbackSource?: PlanItemSource
 ): NormalizedPlanItemInput {
   const normalized = normalizePlanItemInput(input, fallbackSource);
-  if (!normalized) throw new Error("Invalid website URL, title, or source");
+  if (!normalized) throw new Error("Invalid website URL, title, duration, or source");
   return normalized;
 }
 
@@ -334,14 +464,23 @@ function createPlanItem(input: NormalizedPlanItemInput, order: number, addedAt: 
 
 function persistedPlanInput(
   input: NormalizedPlanItemInput
-): Pick<PlanItem, "url" | "origin" | "title" | "source" | "bvid"> {
+): Pick<
+  PlanItem,
+  "url" | "origin" | "title" | "source" | "bvid" | "scheduledDurationMinutes" | "completionMode"
+> {
   return {
     url: input.url,
     origin: input.origin,
     title: input.title,
     source: input.source,
+    scheduledDurationMinutes: input.scheduledDurationMinutes,
+    completionMode: input.completionMode,
     ...(input.bvid ? { bvid: input.bvid } : {})
   };
+}
+
+function planItemAuthorizationIdentity(item: PlanItem): string {
+  return `${item.url}\n${item.bvid ?? ""}\n${item.scheduledDurationMinutes}\n${item.completionMode}`;
 }
 
 function createId(): string {

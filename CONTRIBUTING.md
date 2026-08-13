@@ -25,6 +25,7 @@ npm run test:e2e
 - 可复用逻辑模块化；对 URL/时间/storage/message 等外部输入做运行时验证。
 - UI 使用语义 HTML、可见焦点和明确 label；不得只用颜色表达状态。
 - 所有用户可见文案必须通过 [UX writing 规范](./docs/UX_WRITING.md)；隐私行为、权限和数据 schema 变更同步更新文档。
+- 可选网站模块遵守 [模块开发准则](./docs/MODULE_DEVELOPMENT.md) 和 [本地模块协议](./docs/LOCAL_MODULES.md)，不得预装、联网更新或扩大清单声明的来源权限。
 
 ## 提交变更
 

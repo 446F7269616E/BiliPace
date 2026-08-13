@@ -13,9 +13,9 @@
 - [ ] 商店 ZIP 不包含网站专用模块、`optional-modules/`、远程脚本或远程更新清单。
 - [ ] 可选网站范围没有转化为默认全站访问；每次请求为精确 origin。
 - [ ] 没有远程 JS/Wasm、动态执行、CDN、生产 source map 或复杂远程指令。
-- [ ] 本地模块在 UI/后台双重校验；远程 CSS、通配主机、危险 DNR 和超限内容被拒绝。
+- [ ] 本地模块在 UI/后台双重校验；远程 CSS、通配主机、任何非空 DNR 和超限内容被拒绝。
 - [ ] Chromium 用户脚本只走 User Scripts API；Firefox 使用可选权限；Safari 明确拒绝脚本文件。
-- [ ] 停用/删除模块会注销 User Scripts 和 Hourleaf 自有动态 DNR ID 范围。
+- [ ] 停用/删除模块会注销 User Scripts；初始化会清理 Hourleaf 旧版自有动态 DNR ID 范围。
 - [ ] 升级迁移、权限拒绝/撤销、清空、删除网站、卸载和回滚已验证。
 - [ ] `PRIVACY.md`、商店数据披露、Storage 和抓包结果一致。
 
@@ -31,14 +31,14 @@
 ### Chrome / Chromium
 
 - [ ] Chromium ZIP 根目录直接包含 `manifest.json`，且只发布一个扩展包。
-- [ ] `userScripts`、`declarativeNetRequestWithHostAccess` 及精确来源权限均有单一用途说明。
+- [ ] `userScripts` 与精确来源权限均有单一用途说明；manifest 不再申请 DNR 权限。
 - [ ] Developer Dashboard 的 single purpose、permission justification、data usage 与隐私 URL 填写完成。
 - [ ] 商店草稿安装后复测权限提示、Service Worker 恢复与升级。
 
 ### Firefox
 
 - [ ] manifest 保留稳定 Gecko ID 和准确 `data_collection_permissions`。
-- [ ] `userScripts` 仅在 `optional_permissions`，未授权时 CSS/DNR 能力仍可使用。
+- [ ] `userScripts` 仅在平台所需权限范围；未授权时域名策略、元素隐藏与 CSS 仍可使用。
 - [ ] `web-ext lint` 通过；构建说明和可审计源码按 AMO 要求提交。
 - [ ] 使用最终 AMO 签名 XPI 验证安装、升级、禁用、启用和卸载。
 
@@ -53,6 +53,6 @@
 
 - [ ] 默认分支保护、必需 CI、最小维护权限和私密漏洞报告启用。
 - [ ] CI 先执行 `npm run package`，再上传 `dist/packages`；缺失产物时任务失败。
-- [ ] 创建受保护 tag 和 GitHub Release，上传三平台商店候选包、源码与 `SHA256SUMS`。
+- [ ] 创建受保护 tag 和 GitHub Release，上传三平台商店候选包、源码、`dist/packages/SHA256SUMS`，以及与扩展包分离的 `dist/modules/` 模块 ZIP 和校验文件。
 - [ ] Release 只记录产品变更、已知限制与平台状态，不包含内部协作说明或面向单个用户的建议。
 - [ ] 小比例发布后观察错误计时、权限和站点兼容问题；保留上一安全版本和数据兼容路径。

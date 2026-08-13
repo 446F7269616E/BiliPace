@@ -1,7 +1,14 @@
-/*
- * Hourleaf optional local style.
- * This file is applied only to the exact origins declared by hourleaf-module.json.
- */
+/* ==UserStyle==
+ * @format      hourleaf.local-module
+ * @id          hourleaf.local.bilibili-focus
+ * @name        Bilibili 专注模块
+ * @author      Hourleaf contributors
+ * @version     1.1.0
+ * @match       https://www.bilibili.com/*
+ * @match       https://live.bilibili.com/*
+ * @match       https://t.bilibili.com/*
+ * @match       https://search.bilibili.com/*
+ * ==/UserStyle== */
 
 .bili-video-card,
 .feed-card,

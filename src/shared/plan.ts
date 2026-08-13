@@ -1,9 +1,20 @@
-import { PLAN_ITEM_SOURCES, type PlanItemInput, type PlanItemSource } from "./types";
+import {
+  PLAN_COMPLETION_MODES,
+  PLAN_ITEM_SOURCES,
+  type PlanCompletionMode,
+  type PlanItemInput,
+  type PlanItemSource
+} from "./types";
 
 export const MAX_PLAN_ITEMS = 500;
 export const MAX_PLAN_IMPORT_ITEMS = 100;
 export const MAX_PLAN_TITLE_LENGTH = 200;
 export const MAX_PLAN_ID_LENGTH = 100;
+export const MIN_PLAN_DURATION_MINUTES = 1;
+export const MAX_PLAN_DURATION_MINUTES = 1_440;
+export const LEGACY_PLAN_DURATION_MINUTES = 45;
+export const MIN_PLAN_FLOW_EXTENSION_MINUTES = 1;
+export const MAX_PLAN_FLOW_EXTENSION_MINUTES = 15;
 
 export interface NormalizedPlanItemInput {
   url: string;
@@ -12,6 +23,8 @@ export interface NormalizedPlanItemInput {
   bvid?: string;
   title: string;
   source: PlanItemSource;
+  scheduledDurationMinutes: number;
+  completionMode: PlanCompletionMode;
 }
 
 /**
@@ -38,13 +51,17 @@ export function normalizePlanItemInput(
 
   const source = input.source === undefined ? fallbackSource : input.source;
   if (!isPlanItemSource(source)) return null;
+  if (!isPlanDurationMinutes(input.scheduledDurationMinutes)) return null;
+  if (!isPlanCompletionMode(input.completionMode)) return null;
   return {
     url: url.href,
     origin: url.origin,
     identity: url.href,
     ...(typeof input.bvid === "string" ? { bvid: input.bvid } : {}),
     title: title || url.hostname,
-    source
+    source,
+    scheduledDurationMinutes: input.scheduledDurationMinutes,
+    completionMode: input.completionMode
   };
 }
 
@@ -66,6 +83,10 @@ export function isPlanItemSource(value: unknown): value is PlanItemSource {
   return typeof value === "string" && PLAN_ITEM_SOURCES.includes(value as PlanItemSource);
 }
 
+export function isPlanCompletionMode(value: unknown): value is PlanCompletionMode {
+  return typeof value === "string" && PLAN_COMPLETION_MODES.includes(value as PlanCompletionMode);
+}
+
 export function isPlanItemInput(value: unknown): value is PlanItemInput {
   return normalizePlanItemInput(value) !== null;
 }
@@ -76,6 +97,24 @@ export function isPlanId(value: unknown): value is string {
     value.length >= 1 &&
     value.length <= MAX_PLAN_ID_LENGTH &&
     value.trim() === value
+  );
+}
+
+export function isPlanDurationMinutes(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= MIN_PLAN_DURATION_MINUTES &&
+    value <= MAX_PLAN_DURATION_MINUTES
+  );
+}
+
+export function isPlanFlowExtensionMinutes(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= MIN_PLAN_FLOW_EXTENSION_MINUTES &&
+    value <= MAX_PLAN_FLOW_EXTENSION_MINUTES
   );
 }
 
