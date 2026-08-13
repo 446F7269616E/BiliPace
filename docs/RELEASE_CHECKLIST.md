@@ -53,6 +53,6 @@
 
 - [ ] 默认分支保护、必需 CI、最小维护权限和私密漏洞报告启用。
 - [ ] CI 先执行 `npm run package`，再上传 `dist/packages`；缺失产物时任务失败。
-- [ ] 创建受保护 tag 和 GitHub Release，上传三平台商店候选包、源码、`dist/packages/SHA256SUMS`，以及与扩展包分离的 `dist/modules/` 模块 ZIP 和校验文件。
+- [ ] 创建受保护 tag 和 GitHub Release，上传三平台商店候选包、源码、`dist/packages/SHA256SUMS`，以及与扩展包分离的 `dist/modules/` 模块 ZIP 和 `MODULE-SHA256SUMS`。
 - [ ] Release 只记录产品变更、已知限制与平台状态，不包含内部协作说明或面向单个用户的建议。
 - [ ] 小比例发布后观察错误计时、权限和站点兼容问题；保留上一安全版本和数据兼容路径。
