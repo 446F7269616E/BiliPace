@@ -144,7 +144,7 @@ unzip -l dist/modules/hourleaf-module-<slug>-<version>.zip
 - minor：新增来源、过滤区域或可选能力；
 - major：行为或权限范围发生不兼容变化。
 
-每次修改同步更新清单、CSS/脚本元数据和 Release 说明。`npm run package` 会为 `optional-modules/` 下的每个有效目录生成独立 ZIP 与 SHA-256。模块 ZIP 和浏览器安装包发布在同一 GitHub Release，但必须作为不同资产列出；模块永远不复制进扩展安装包。
+每次修改同步更新清单、CSS/脚本元数据和 Release 说明。`npm run package` 会为 `optional-modules/` 下的每个有效目录生成独立 ZIP 与 `MODULE-SHA256SUMS`。模块 ZIP 和浏览器安装包发布在同一 GitHub Release，但必须作为不同资产列出；模块永远不复制进扩展安装包。
 
 ## 10. PR 评审清单
 

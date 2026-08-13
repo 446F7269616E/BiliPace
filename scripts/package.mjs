@@ -106,7 +106,7 @@ for (const entry of optionalModuleEntries) {
 }
 if (moduleChecksums.length === 0) throw new Error("No optional module release candidates found");
 await writeFile(
-  path.join(moduleReleaseDir, "SHA256SUMS"),
+  path.join(moduleReleaseDir, "MODULE-SHA256SUMS"),
   `${moduleChecksums.join("\n")}\n`,
   "utf8"
 );
