@@ -4,7 +4,9 @@ import {
   type ContentFilterSettings,
   type DeepPartial,
   type FocusSettings,
+  type EndPageSettings,
   type ManagedSite,
+  type PlanModeSettings,
   SECTION_IDS,
   type SectionId,
   type SectionRule,
@@ -14,11 +16,13 @@ import {
   type TemporaryAccessSettings,
   type TimeAccessRule,
   type TimeAccessEffect,
+  type TimePeriodSettings,
   type Weekday
 } from "./types";
 
-export const SETTINGS_SCHEMA_VERSION = 3 as const;
+export const SETTINGS_SCHEMA_VERSION = 4 as const;
 export const MAX_TIME_ACCESS_RULES = 64;
+export const MAX_TIME_PERIODS = 64;
 export const MAX_MANAGED_SITES = 256;
 export const MAX_TARGETS = 512;
 
@@ -45,6 +49,13 @@ function defaultRule(section: SectionId): SectionRule {
 export const DEFAULT_SETTINGS: Readonly<FocusSettings> = Object.freeze({
   schemaVersion: SETTINGS_SCHEMA_VERSION,
   enabled: true,
+  showRemainingMinutesOnIcon: true,
+  locale: "system",
+  endPage: Object.freeze({
+    view: "dashboard",
+    motivationalMessage: "",
+    groupUnlock: Object.freeze({ method: "none", waitMinutes: 5, passwordVerifier: "" })
+  }),
   sites: Object.freeze({}),
   targets: Object.freeze({}),
   sectionRules: Object.freeze(
@@ -59,7 +70,9 @@ export const DEFAULT_SETTINGS: Readonly<FocusSettings> = Object.freeze({
   }),
   planMode: Object.freeze({
     enabled: false,
-    watchDurationMinutes: 45
+    watchDurationMinutes: 45,
+    defaultCompletionMode: "flow",
+    autoCompleteOnStart: false
   }),
   contentFilters: Object.freeze({
     enabled: true,
@@ -75,7 +88,12 @@ export const DEFAULT_SETTINGS: Readonly<FocusSettings> = Object.freeze({
           SECTION_IDS.map((section) => [section, Object.freeze(defaultRule(section))])
         ) as Record<SectionId, SectionRule>
       ),
-      planMode: Object.freeze({ enabled: false, watchDurationMinutes: 45 }),
+      planMode: Object.freeze({
+        enabled: false,
+        watchDurationMinutes: 45,
+        defaultCompletionMode: "flow",
+        autoCompleteOnStart: false
+      }),
       contentFilters: Object.freeze({
         enabled: true,
         hiddenElements: DEFAULT_HIDDEN_ELEMENTS,
@@ -99,6 +117,16 @@ export function mergeSettings(
     ...patch,
     schemaVersion: SETTINGS_SCHEMA_VERSION,
     enabled: patch.enabled ?? base.enabled,
+    showRemainingMinutesOnIcon: patch.showRemainingMinutesOnIcon ?? base.showRemainingMinutesOnIcon,
+    locale: patch.locale ?? base.locale,
+    endPage: {
+      ...base.endPage,
+      ...(patch.endPage ?? {}),
+      groupUnlock: {
+        ...base.endPage.groupUnlock,
+        ...(patch.endPage?.groupUnlock ?? {})
+      }
+    },
     sites: { ...base.sites },
     targets: { ...base.targets },
     sectionRules: { ...base.sectionRules },
@@ -127,7 +155,21 @@ export function mergeSettings(
 
   for (const [siteId, sitePatch] of Object.entries(patch.sites ?? {})) {
     const current = base.sites[siteId];
-    if (current && sitePatch) merged.sites[siteId] = { ...current, ...sitePatch };
+    if (current && sitePatch) {
+      const { visitConfirmation, ...flatSitePatch } = sitePatch;
+      merged.sites[siteId] = {
+        ...current,
+        ...flatSitePatch,
+        ...(visitConfirmation
+          ? {
+              visitConfirmation: {
+                ...(current.visitConfirmation ?? { enabled: false, waitSeconds: 3 }),
+                ...visitConfirmation
+              }
+            }
+          : {})
+      };
+    }
   }
   for (const [targetId, targetPatch] of Object.entries(patch.targets ?? {})) {
     const current = base.targets[targetId];
@@ -138,6 +180,12 @@ export function mergeSettings(
       schedules: targetPatch.schedules
         ? targetPatch.schedules.map((rule) => ({ ...rule, days: [...(rule.days ?? [])] }))
         : current.schedules.map(cloneSchedule),
+      timePeriods: targetPatch.timePeriods
+        ? targetPatch.timePeriods.map((period) => ({
+            ...period,
+            days: [...(period.days ?? [])]
+          }))
+        : current.timePeriods.map(cloneTimePeriod),
       temporaryAccess: {
         ...current.temporaryAccess,
         ...(targetPatch.temporaryAccess ?? {})
@@ -224,9 +272,42 @@ export function normalizeSettings(value: unknown): FocusSettings {
     : isRecord(rawBilibili.planMode)
       ? rawBilibili.planMode
       : {};
-  const planMode = {
+  const planMode: PlanModeSettings = {
     enabled: typeof rawPlanMode.enabled === "boolean" ? rawPlanMode.enabled : false,
-    watchDurationMinutes: clampInteger(rawPlanMode.watchDurationMinutes, 1, 360, 45)
+    watchDurationMinutes: clampInteger(rawPlanMode.watchDurationMinutes, 1, 360, 45),
+    defaultCompletionMode:
+      rawPlanMode.defaultCompletionMode === "lenient" ||
+      rawPlanMode.defaultCompletionMode === "strict"
+        ? rawPlanMode.defaultCompletionMode
+        : "flow",
+    autoCompleteOnStart: rawPlanMode.autoCompleteOnStart === true
+  };
+
+  const rawEndPage = isRecord(value.endPage) ? value.endPage : {};
+  const rawGroupUnlock = isRecord(rawEndPage.groupUnlock) ? rawEndPage.groupUnlock : {};
+  const endPage: EndPageSettings = {
+    view:
+      rawEndPage.view === "message" || rawEndPage.view === "minimal"
+        ? rawEndPage.view
+        : ("dashboard" as const),
+    motivationalMessage:
+      typeof rawEndPage.motivationalMessage === "string"
+        ? rawEndPage.motivationalMessage.trim().slice(0, 500)
+        : "",
+    groupUnlock: {
+      method:
+        rawGroupUnlock.method === "wait" ||
+        rawGroupUnlock.method === "math" ||
+        rawGroupUnlock.method === "password"
+          ? rawGroupUnlock.method
+          : ("none" as const),
+      waitMinutes: clampInteger(rawGroupUnlock.waitMinutes, 1, 180, 5),
+      passwordVerifier:
+        typeof rawGroupUnlock.passwordVerifier === "string" &&
+        /^[a-f0-9]{64}$/u.test(rawGroupUnlock.passwordVerifier)
+          ? rawGroupUnlock.passwordVerifier
+          : ""
+    }
   };
 
   const contentFilters = normalizeContentFilters(
@@ -238,6 +319,12 @@ export function normalizeSettings(value: unknown): FocusSettings {
   return {
     schemaVersion: SETTINGS_SCHEMA_VERSION,
     enabled: typeof value.enabled === "boolean" ? value.enabled : defaults.enabled,
+    showRemainingMinutesOnIcon:
+      typeof value.showRemainingMinutesOnIcon === "boolean"
+        ? value.showRemainingMinutesOnIcon
+        : defaults.showRemainingMinutesOnIcon,
+    locale: value.locale === "zh-CN" || value.locale === "en" ? value.locale : ("system" as const),
+    endPage,
     sites,
     targets,
     sectionRules,
@@ -270,7 +357,15 @@ function normalizeManagedConfiguration(
       origin,
       hostname: new URL(origin).hostname,
       label: normalizeLabel(rawValue.label, new URL(origin).hostname),
-      enabled: typeof rawValue.enabled === "boolean" ? rawValue.enabled : true,
+      // Schema v4.1 removes the hidden website master switch. Keep the field
+      // true as a storage compatibility mirror so an old disabled value cannot
+      // silently override the visible per-period switches.
+      enabled: true,
+      restrictionMode:
+        rawValue.restrictionMode === "lenient" || rawValue.restrictionMode === "flow"
+          ? rawValue.restrictionMode
+          : "strict",
+      visitConfirmation: normalizeVisitConfirmation(rawValue.visitConfirmation),
       targetIds: [],
       createdAt,
       updatedAt
@@ -282,22 +377,30 @@ function normalizeManagedConfiguration(
     const site = sites[rawValue.siteId];
     if (!site) continue;
     const rawAccess = isRecord(rawValue.temporaryAccess) ? rawValue.temporaryAccess : {};
+    const schedules = Array.isArray(rawValue.schedules)
+      ? rawValue.schedules.slice(0, MAX_TIME_ACCESS_RULES).map(normalizeSchedule).filter(isDefined)
+      : [];
+    const timePeriods = Array.isArray(rawValue.timePeriods)
+      ? rawValue.timePeriods.slice(0, MAX_TIME_PERIODS).map(normalizeTimePeriod).filter(isDefined)
+      : migrateLegacyTimePeriods(
+          schedules,
+          rawValue.dailyLimitMinutes,
+          targetId,
+          rawValue.accessPolicy
+        );
     const target: SiteTargetSettings = {
       id: targetId,
       siteId: site.id,
       label: normalizeLabel(rawValue.label, site.label),
-      enabled: typeof rawValue.enabled === "boolean" ? rawValue.enabled : true,
-      accessPolicy:
-        rawValue.accessPolicy === "always-allow" || rawValue.accessPolicy === "always-block"
-          ? rawValue.accessPolicy
-          : "timed",
+      // Availability is now exclusively controlled by timePeriods[].enabled.
+      enabled: true,
+      // Schema v4 evaluates availability exclusively through time periods. The
+      // legacy direct policy is absorbed above only when canonical periods are
+      // absent, then normalized away so it cannot silently override UI edits.
+      accessPolicy: "timed",
       dailyLimitMinutes: normalizeDailyLimit(rawValue.dailyLimitMinutes),
-      schedules: Array.isArray(rawValue.schedules)
-        ? rawValue.schedules
-            .slice(0, MAX_TIME_ACCESS_RULES)
-            .map(normalizeSchedule)
-            .filter(isDefined)
-        : [],
+      schedules,
+      timePeriods,
       temporaryAccess: {
         enabled: typeof rawAccess.enabled === "boolean" ? rawAccess.enabled : true,
         durationMinutes: clampInteger(rawAccess.durationMinutes, 1, 60, 5),
@@ -376,7 +479,7 @@ function normalizeSchedule(value: unknown): TimeAccessRule | undefined {
     : [];
 
   return {
-    id: typeof value.id === "string" && value.id.trim() ? value.id : createId(),
+    id: isStableId(value.id) ? value.id : createId(),
     name: typeof value.name === "string" ? value.name.trim().slice(0, 60) : "时间规则",
     enabled: typeof value.enabled === "boolean" ? value.enabled : true,
     // schema v1 schedules were block-only. A missing effect is migrated without
@@ -386,6 +489,100 @@ function normalizeSchedule(value: unknown): TimeAccessRule | undefined {
     startTime,
     endTime
   };
+}
+
+function normalizeTimePeriod(value: unknown): TimePeriodSettings | undefined {
+  if (!isRecord(value)) return undefined;
+  const startTime = normalizeTime(value.startTime);
+  const endTime = normalizeTime(value.endTime);
+  if (!startTime || !endTime) return undefined;
+  const days = Array.isArray(value.days)
+    ? [...new Set(value.days.filter(isWeekday))].sort((left, right) => left - right)
+    : [];
+  if (days.length === 0) return undefined;
+  const behavior =
+    value.behavior === "always-allow" || value.behavior === "always-block"
+      ? value.behavior
+      : "timed";
+  return {
+    id: isStableId(value.id) ? value.id : createId(),
+    name: normalizeTimePeriodName(value.name),
+    enabled: typeof value.enabled === "boolean" ? value.enabled : true,
+    days,
+    startTime,
+    endTime,
+    behavior,
+    limitMinutes: behavior === "timed" ? normalizeDailyLimit(value.limitMinutes) : null,
+    groupCount: behavior === "timed" ? clampInteger(value.groupCount, 1, 24, 1) : 1
+  };
+}
+
+function migrateLegacyTimePeriods(
+  schedules: TimeAccessRule[],
+  rawDailyLimit: unknown,
+  targetId: string,
+  rawAccessPolicy?: unknown
+): TimePeriodSettings[] {
+  if (rawAccessPolicy === "always-allow" || rawAccessPolicy === "always-block") {
+    return [
+      {
+        ...createDefaultTimePeriod(),
+        id: `period:legacy-policy:${targetId}`.slice(0, 128),
+        behavior: rawAccessPolicy
+      }
+    ];
+  }
+  if (schedules.length === 0) {
+    return [
+      {
+        ...createDefaultTimePeriod(normalizeDailyLimit(rawDailyLimit)),
+        id: `period:legacy-default:${targetId}`.slice(0, 128)
+      }
+    ];
+  }
+  const migrated: TimePeriodSettings[] = schedules.map((schedule) => ({
+    id: `period:${schedule.id}`.slice(0, 128),
+    name: schedule.name,
+    enabled: schedule.enabled,
+    days: [...schedule.days],
+    startTime: schedule.startTime,
+    endTime: schedule.endTime,
+    behavior: schedule.effect === "allow" ? "always-allow" : "always-block",
+    limitMinutes: null,
+    groupCount: 1
+  }));
+  // Legacy block-only schedules allowed time outside the blocked windows and
+  // then applied the target's daily allowance. Preserve that behavior with an
+  // all-day timed fallback. Any legacy allow rule formed a closed allowlist.
+  if (!schedules.some((schedule) => schedule.effect === "allow")) {
+    migrated.push({
+      ...createDefaultTimePeriod(normalizeDailyLimit(rawDailyLimit)),
+      id: `period:legacy-fallback:${targetId}`.slice(0, 128)
+    });
+  }
+  return migrated;
+}
+
+export function createDefaultTimePeriod(limitMinutes: number | null = null): TimePeriodSettings {
+  return {
+    id: createId().replace(/^schedule-/u, "period-"),
+    // Empty is the locale-independent marker for the system-provided name. UI
+    // surfaces translate it at render time instead of persisting one language.
+    name: "",
+    enabled: true,
+    days: [0, 1, 2, 3, 4, 5, 6],
+    startTime: "00:00",
+    endTime: "00:00",
+    behavior: "timed",
+    limitMinutes,
+    groupCount: 1
+  };
+}
+
+function normalizeTimePeriodName(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const name = value.trim().slice(0, 60);
+  return name === "全天" || name === "时间段" ? "" : name;
 }
 
 export function isTimeOfDay(value: unknown): value is string {
@@ -417,10 +614,20 @@ function cloneSettings(settings: Readonly<FocusSettings>): FocusSettings {
   return {
     schemaVersion: SETTINGS_SCHEMA_VERSION,
     enabled: settings.enabled,
+    showRemainingMinutesOnIcon: settings.showRemainingMinutesOnIcon,
+    locale: settings.locale,
+    endPage: {
+      ...settings.endPage,
+      groupUnlock: { ...settings.endPage.groupUnlock }
+    },
     sites: Object.fromEntries(
       Object.entries(settings.sites).map(([id, site]) => [
         id,
-        { ...site, targetIds: [...site.targetIds] }
+        {
+          ...site,
+          targetIds: [...site.targetIds],
+          ...(site.visitConfirmation ? { visitConfirmation: { ...site.visitConfirmation } } : {})
+        }
       ])
     ),
     targets: Object.fromEntries(
@@ -429,6 +636,7 @@ function cloneSettings(settings: Readonly<FocusSettings>): FocusSettings {
         {
           ...target,
           schedules: target.schedules.map(cloneSchedule),
+          timePeriods: target.timePeriods.map(cloneTimePeriod),
           temporaryAccess: { ...target.temporaryAccess }
         }
       ])
@@ -470,11 +678,23 @@ function createUnsafeDefaultSettings(): FocusSettings {
   return {
     schemaVersion: SETTINGS_SCHEMA_VERSION,
     enabled: true,
+    showRemainingMinutesOnIcon: true,
+    locale: "system",
+    endPage: {
+      view: "dashboard",
+      motivationalMessage: "",
+      groupUnlock: { method: "none", waitMinutes: 5, passwordVerifier: "" }
+    },
     sites: {},
     targets: {},
     sectionRules,
     temporaryAccess: { enabled: true, durationMinutes: 5, maxUsesPerDay: 3 },
-    planMode: { enabled: false, watchDurationMinutes: 45 },
+    planMode: {
+      enabled: false,
+      watchDurationMinutes: 45,
+      defaultCompletionMode: "flow",
+      autoCompleteOnStart: false
+    },
     contentFilters: {
       enabled: true,
       hiddenElements: { ...DEFAULT_HIDDEN_ELEMENTS },
@@ -507,6 +727,17 @@ function normalizeTimestamp(value: unknown, fallback = Date.now()): number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : fallback;
 }
 
+function normalizeVisitConfirmation(value: unknown): {
+  enabled: boolean;
+  waitSeconds: number;
+} {
+  const raw = isRecord(value) ? value : {};
+  return {
+    enabled: raw.enabled === true,
+    waitSeconds: clampInteger(raw.waitSeconds, 0, 60, 3)
+  };
+}
+
 export function isStableId(value: unknown): value is string {
   return (
     typeof value === "string" &&
@@ -518,6 +749,10 @@ export function isStableId(value: unknown): value is string {
 
 function cloneSchedule(schedule: TimeAccessRule): TimeAccessRule {
   return { ...schedule, days: [...schedule.days] };
+}
+
+function cloneTimePeriod(period: TimePeriodSettings): TimePeriodSettings {
+  return { ...period, days: [...period.days] };
 }
 
 function isTimeAccessEffect(value: unknown): value is TimeAccessEffect {

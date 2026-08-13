@@ -1,5 +1,6 @@
 import { AnalyticsService, formatLocalDate } from "./analytics";
-import { shouldBlockTarget } from "./schedule";
+import { evaluateTimePeriods } from "./schedule";
+import { PeriodRuntimeService } from "./period-runtime";
 import { SettingsRepository, TemporaryAccessRepository } from "./storage";
 import type {
   FocusSettings,
@@ -28,7 +29,12 @@ export class FocusDecisionService {
     private readonly settingsRepository = new SettingsRepository(),
     private readonly accessRepository = new TemporaryAccessRepository(),
     private readonly analytics = new AnalyticsService(),
-    private readonly targetResolver?: FocusTargetResolver
+    private readonly targetResolver?: FocusTargetResolver,
+    private readonly periodRuntime = new PeriodRuntimeService(
+      settingsRepository,
+      undefined,
+      analytics
+    )
   ) {}
 
   async decide(url: string, now = new Date(), requestedTargetId?: TargetId): Promise<PageDecision> {
@@ -36,19 +42,25 @@ export class FocusDecisionService {
     const resolved = await this.resolveTarget(settings, url, requestedTargetId);
     if (!resolved) return unmanagedDecision();
     const access = await this.accessRepository.get();
-    const baseDecision = await this.evaluateBaseDecision(settings, resolved.target, now);
+    const baseDecision = await this.evaluateBaseDecision(settings, resolved, now);
     const today = formatLocalDate(now);
     const uses =
       access.usesByDateAndTarget[today]?.[resolved.target.id] ??
       (resolved.legacySection ? (access.usesByDate[today] ?? 0) : 0);
     const policy = resolved.target.temporaryAccess;
     const usesRemaining = Math.max(0, policy.maxUsesPerDay - uses);
-    const canRequest = baseDecision.blocked && policy.enabled && usesRemaining > 0;
+    // Canonical time-period decisions are final. Temporary access remains only
+    // as a dormant migration capability for the legacy daily-limit reason and
+    // must never bypass always-block, period limits, or group boundaries.
+    const temporaryAccessEligible = baseDecision.reason === "daily-limit";
+    const canRequest =
+      baseDecision.blocked && temporaryAccessEligible && policy.enabled && usesRemaining > 0;
     const identity = decisionIdentity(resolved);
 
     if (!baseDecision.blocked) {
       return {
         ...identity,
+        ...baseDecision.details,
         blocked: false,
         reason: baseDecision.reason,
         canRequestTemporaryAccess: false,
@@ -59,6 +71,7 @@ export class FocusDecisionService {
     if (baseDecision.reason === "domain-block") {
       return {
         ...identity,
+        ...baseDecision.details,
         blocked: true,
         reason: "domain-block",
         canRequestTemporaryAccess: false,
@@ -67,9 +80,10 @@ export class FocusDecisionService {
     }
 
     const expiresAt = access.expiresAtByTarget[resolved.target.id] ?? 0;
-    if (expiresAt > now.getTime()) {
+    if (temporaryAccessEligible && expiresAt > now.getTime()) {
       return {
         ...identity,
+        ...baseDecision.details,
         blocked: false,
         reason: "temporary-access",
         temporaryAccessExpiresAt: expiresAt,
@@ -79,6 +93,7 @@ export class FocusDecisionService {
     }
     return {
       ...identity,
+      ...baseDecision.details,
       blocked: true,
       reason: baseDecision.reason,
       canRequestTemporaryAccess: canRequest,
@@ -90,9 +105,9 @@ export class FocusDecisionService {
     const settings = await this.settingsRepository.get();
     const resolved = await this.resolveTarget(settings, url, requestedTargetId);
     if (!resolved) return unmanagedDecision();
-    const baseDecision = await this.evaluateBaseDecision(settings, resolved.target, now);
+    const baseDecision = await this.evaluateBaseDecision(settings, resolved, now);
     const policy = resolved.target.temporaryAccess;
-    if (!baseDecision.blocked || baseDecision.reason === "domain-block" || !policy.enabled) {
+    if (baseDecision.reason !== "daily-limit" || !baseDecision.blocked || !policy.enabled) {
       return this.decide(url, now, requestedTargetId);
     }
 
@@ -124,7 +139,7 @@ export class FocusDecisionService {
 
   private async evaluateBaseDecision(
     settings: FocusSettings,
-    target: SiteTargetSettings,
+    resolved: FocusTarget,
     now: Date
   ): Promise<{
     blocked: boolean;
@@ -135,29 +150,104 @@ export class FocusDecisionService {
       | "domain-block"
       | "outside-schedule"
       | "daily-limit"
+      | "period-limit"
+      | "group-boundary"
+      | "flow-extension"
       | "blocked";
+    details?: Pick<
+      PageDecision,
+      | "activePeriodId"
+      | "restrictionMode"
+      | "groupIndex"
+      | "groupCount"
+      | "groupBoundary"
+      | "needsFlowChoice"
+      | "needsReminder"
+      | "flowContinuationKind"
+      | "flowExpiresAt"
+    >;
   }> {
+    const target = resolved.target;
     if (!settings.enabled) return { blocked: false, reason: "focus-disabled" };
-    if (!target.enabled) return { blocked: false, reason: "rule-disabled" };
-    if (target.accessPolicy === "always-allow") {
-      return { blocked: false, reason: "domain-allow" };
-    }
-    if (target.accessPolicy === "always-block") {
-      return { blocked: true, reason: "domain-block" };
-    }
-    const scheduleDecision = shouldBlockTarget(settings.enabled, target, now);
-    if (
-      scheduleDecision.reason === "focus-disabled" ||
-      scheduleDecision.reason === "rule-disabled"
-    ) {
-      return scheduleDecision;
-    }
-    if (scheduleDecision.explicit) return scheduleDecision;
-    if (target.dailyLimitMinutes === null) return scheduleDecision;
     const usage = await this.analytics.summarize("day", now);
-    return (usage.byTarget[target.id] ?? 0) >= target.dailyLimitMinutes * 60
-      ? { blocked: true, reason: "daily-limit" }
-      : { blocked: false, reason: "outside-schedule" };
+    const site = resolved.siteId ? settings.sites[resolved.siteId] : undefined;
+    const restrictionMode = site?.restrictionMode ?? "strict";
+    const preliminaryDecision = evaluateTimePeriods(
+      settings.enabled,
+      target,
+      now,
+      usage.byPeriod,
+      1,
+      false
+    );
+    const runtimeEntry = preliminaryDecision.activePeriod
+      ? await this.periodRuntime.getEntry(target.id, preliminaryDecision.activePeriod.id, now)
+      : undefined;
+    const activeFlow =
+      runtimeEntry?.flowContinuationKind === "video-end" ||
+      (runtimeEntry?.flowContinuationKind === "minutes" &&
+        runtimeEntry.flowExpiresAt !== undefined &&
+        runtimeEntry.flowExpiresAt > now.getTime());
+    if (runtimeEntry && activeFlow) {
+      return {
+        blocked: false,
+        reason: "flow-extension",
+        details: {
+          activePeriodId: runtimeEntry.periodId,
+          restrictionMode,
+          flowContinuationKind: runtimeEntry.flowContinuationKind,
+          ...(runtimeEntry.flowExpiresAt !== undefined
+            ? { flowExpiresAt: runtimeEntry.flowExpiresAt }
+            : {})
+        }
+      };
+    }
+    const periodDecision = evaluateTimePeriods(
+      settings.enabled,
+      target,
+      now,
+      usage.byPeriod,
+      runtimeEntry?.unlockedGroups ?? 1,
+      settings.endPage.groupUnlock.method !== "none"
+    );
+    const details: Pick<
+      PageDecision,
+      | "activePeriodId"
+      | "restrictionMode"
+      | "groupIndex"
+      | "groupCount"
+      | "groupBoundary"
+      | "needsFlowChoice"
+      | "needsReminder"
+      | "flowContinuationKind"
+      | "flowExpiresAt"
+    > = {
+      ...(periodDecision.activePeriod ? { activePeriodId: periodDecision.activePeriod.id } : {}),
+      restrictionMode,
+      ...(periodDecision.groupIndex !== undefined ? { groupIndex: periodDecision.groupIndex } : {}),
+      ...(periodDecision.groupCount !== undefined ? { groupCount: periodDecision.groupCount } : {}),
+      ...(periodDecision.groupBoundary ? { groupBoundary: true } : {})
+    };
+    if (periodDecision.reason === "period-limit") {
+      if (restrictionMode === "lenient") {
+        return {
+          blocked: false,
+          reason: "period-limit",
+          details: { ...details, needsReminder: true }
+        };
+      }
+      return {
+        blocked: true,
+        reason: "period-limit",
+        details: {
+          ...details,
+          ...(restrictionMode === "flow" && runtimeEntry?.flowUsed !== true
+            ? { needsFlowChoice: true }
+            : {})
+        }
+      };
+    }
+    return { blocked: periodDecision.blocked, reason: periodDecision.reason, details };
   }
 
   private async resolveTarget(
@@ -175,7 +265,7 @@ export class FocusDecisionService {
       return null;
     }
     const site = Object.values(settings.sites).find((candidate) => candidate.origin === origin);
-    if (!site || !site.enabled) return null;
+    if (!site) return null;
     const targetId = requestedTargetId ?? site.targetIds[0];
     const target = targetId ? settings.targets[targetId] : undefined;
     return target && target.siteId === site.id ? { siteId: site.id, target } : null;

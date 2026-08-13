@@ -18,6 +18,10 @@
   padding-bottom: var(--space-9);
 }
 
+.plan-shell--mindmap {
+  width: min(100%, 1480px);
+}
+
 .plan-heading,
 .plan-card__header,
 .plan-section__header,
@@ -118,8 +122,7 @@
 }
 
 .plan-list-view {
-  max-width: 860px;
-  margin-inline: auto;
+  width: 100%;
 }
 
 .plan-section + .plan-section {
@@ -133,8 +136,39 @@
   margin-bottom: var(--space-4);
 }
 
+.plan-section--completed > summary {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+}
+
+.plan-section--completed > summary::-webkit-details-marker {
+  display: none;
+}
+
+.plan-section--completed > summary h2::before {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 10px;
+  content: "";
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: translateY(-2px) rotate(45deg);
+  transition: transform var(--duration-fast) var(--ease-out);
+}
+
+.plan-section--completed[open] > summary h2::before {
+  transform: translateY(1px) rotate(225deg);
+}
+
+.plan-section--completed:not([open]) > summary {
+  margin-bottom: 0;
+}
+
 .plan-status-pill,
 .plan-source-pill,
+.plan-time-pill,
 .plan-item__position {
   display: inline-flex;
   align-items: center;
@@ -147,6 +181,11 @@
   font-size: 11px;
   font-weight: 720;
   letter-spacing: 0.02em;
+}
+
+.plan-time-pill {
+  color: var(--color-accent-strong, var(--color-brand-strong));
+  background: var(--color-accent-soft);
 }
 
 .plan-status-pill--neutral,
@@ -162,6 +201,7 @@
 
 .plan-list {
   display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
   gap: var(--space-3);
   margin: 0;
   padding: 0;
@@ -170,28 +210,94 @@
 
 .plan-mindmap {
   min-width: 0;
-  padding-bottom: 4px;
-  overflow-x: auto;
-  overscroll-behavior-inline: contain;
-  scrollbar-gutter: stable;
+}
+
+.plan-mindmap__topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  min-height: 42px;
+  margin-bottom: var(--space-3);
+}
+
+.plan-mindmap__hint {
+  color: var(--color-text-faint);
+  font-size: 11px;
+}
+
+.plan-mindmap__toolbar {
+  position: relative;
+  z-index: 4;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-xs);
+}
+
+.plan-mindmap__control {
+  width: 32px;
+  min-height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  box-shadow: none;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.plan-mindmap__zoom-value {
+  min-width: 48px;
+  color: var(--color-text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.plan-mindmap__viewport {
+  position: relative;
+  height: clamp(520px, 68vh, 760px);
+  min-height: 420px;
+  overflow: hidden;
+  cursor: grab;
+  background:
+    radial-gradient(
+      circle,
+      color-mix(in srgb, var(--color-border-strong) 72%, transparent) 1px,
+      transparent 1px
+    ),
+    var(--color-surface-soft);
+  background-size: 22px 22px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--color-surface-raised) 80%, transparent);
+  overscroll-behavior: contain;
+  touch-action: none;
+}
+
+.plan-mindmap__viewport--dragging {
+  cursor: grabbing;
+  user-select: none;
 }
 
 .plan-mindmap__canvas {
-  position: relative;
+  position: absolute;
+  top: 0;
+  left: 0;
   display: grid;
   width: max-content;
-  min-width: 100%;
   min-height: 420px;
   grid-template-columns: auto max-content;
   align-items: center;
   gap: 38px;
-  padding: var(--space-6);
-  background:
-    linear-gradient(var(--color-border) 1px, transparent 1px),
-    linear-gradient(90deg, var(--color-border) 1px, transparent 1px), var(--color-surface-soft);
-  background-size: 24px 24px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
+  padding: 48px;
+  transform-origin: 0 0;
+  will-change: transform;
 }
 
 .plan-mindmap__root,
@@ -234,10 +340,10 @@
 
 .plan-mindmap__branches::before {
   position: absolute;
-  top: 25%;
-  bottom: 25%;
+  top: var(--mindmap-connector-top, 25%);
   left: 0;
   width: 2px;
+  height: var(--mindmap-connector-height, 50%);
   content: "";
   background: color-mix(in srgb, var(--color-brand) 58%, var(--color-border));
 }
@@ -272,6 +378,32 @@
   font-size: 12px;
 }
 
+summary.plan-mindmap__branch-title {
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+}
+
+summary.plan-mindmap__branch-title::-webkit-details-marker {
+  display: none;
+}
+
+summary.plan-mindmap__branch-title::after {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 8px;
+  content: "";
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: translateY(-1px) rotate(45deg);
+  transition: transform var(--duration-fast) var(--ease-out);
+}
+
+.plan-mindmap__branch[open] > summary.plan-mindmap__branch-title::after {
+  transform: translateY(1px) rotate(225deg);
+}
+
 .plan-mindmap__branch--complete .plan-mindmap__branch-title {
   color: var(--color-success);
   background: var(--color-success-soft);
@@ -281,7 +413,7 @@
 .plan-mindmap__track {
   position: relative;
   display: grid;
-  grid-auto-columns: minmax(270px, 300px);
+  grid-auto-columns: clamp(240px, 22vw, 288px);
   grid-auto-flow: column;
   gap: var(--space-5);
   align-items: stretch;
@@ -336,7 +468,6 @@
   cursor: grabbing;
 }
 
-.plan-item:hover,
 .plan-item:focus-visible {
   border-color: var(--color-border-strong);
   box-shadow: var(--shadow-sm);
@@ -344,7 +475,8 @@
 
 .plan-item--mindmap {
   z-index: 1;
-  min-height: 184px;
+  width: 100%;
+  min-height: 0;
   align-content: start;
 }
 
@@ -407,11 +539,15 @@
   border: 1px solid var(--color-border-strong);
   border-radius: 9px;
   cursor: pointer;
+  transition:
+    color var(--duration-fast),
+    background-color var(--duration-fast),
+    border-color var(--duration-fast),
+    transform 140ms var(--ease-out);
 }
 
-.plan-item__check:hover {
-  color: var(--color-success);
-  border-color: var(--color-success);
+.plan-item__check:active {
+  transform: scale(0.97);
 }
 
 .plan-item--complete .plan-item__check {
@@ -422,6 +558,16 @@
 
 .plan-item__content {
   min-width: 0;
+}
+
+.plan-item__summary {
+  min-width: 0;
+}
+
+.plan-item--mindmap .plan-item__content {
+  display: flex;
+  height: 100%;
+  flex-direction: column;
 }
 
 .plan-item__topline {
@@ -460,6 +606,17 @@
   white-space: nowrap;
 }
 
+.plan-item--mindmap .plan-item__url {
+  display: -webkit-box;
+  max-width: 100%;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
 .plan-item__meta {
   display: flex;
   flex-wrap: wrap;
@@ -475,6 +632,11 @@
   flex-wrap: wrap;
   gap: var(--space-2);
   margin-top: var(--space-4);
+}
+
+.plan-item--mindmap .plan-item__actions {
+  padding-top: var(--space-3);
+  margin-top: auto;
 }
 
 .plan-item__actions .btn {
@@ -627,6 +789,16 @@
   font-size: 11px;
 }
 
+.plan-field__hint {
+  color: var(--color-text-faint);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.plan-select {
+  appearance: auto;
+}
+
 .plan-form__actions {
   display: flex;
   flex-wrap: wrap;
@@ -717,10 +889,31 @@
   cursor: pointer;
 }
 
-.plan-selection-item:hover,
 .plan-selection-item:has(input:checked) {
   background: var(--color-accent-soft);
   border-color: color-mix(in srgb, var(--color-accent) 38%, var(--color-border));
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .plan-item:hover {
+    border-color: var(--color-border-strong);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .plan-item__check:hover {
+    color: var(--color-success);
+    border-color: var(--color-success);
+  }
+
+  .plan-selection-item:hover {
+    background: var(--color-accent-soft);
+    border-color: color-mix(in srgb, var(--color-accent) 38%, var(--color-border));
+  }
+
+  .plan-section--completed > summary:hover h2,
+  summary.plan-mindmap__branch-title:hover {
+    color: var(--color-accent);
+  }
 }
 
 .plan-selection-item input {
@@ -779,9 +972,23 @@
     min-width: 0;
   }
 
+  .plan-mindmap__topbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .plan-mindmap__toolbar {
+    align-self: flex-end;
+  }
+
+  .plan-mindmap__viewport {
+    height: clamp(440px, 64vh, 620px);
+    min-height: 380px;
+  }
+
   .plan-mindmap__canvas {
     min-height: 360px;
-    padding: var(--space-4);
+    padding: var(--space-5);
   }
 
   .plan-dialog {
@@ -830,6 +1037,19 @@
   .plan-skeleton__item {
     animation: none;
   }
+
+  .plan-progress__bar,
+  .plan-item,
+  .plan-item__check,
+  .plan-input,
+  .plan-section--completed > summary h2::before,
+  summary.plan-mindmap__branch-title::after {
+    transition-duration: 0.01ms;
+  }
+
+  .plan-item__check:active {
+    transform: none;
+  }
 }
 
 @media (forced-colors: active) {
@@ -838,7 +1058,7 @@
   .plan-dialog,
   .plan-selection-item,
   .plan-item__check,
-  .plan-mindmap__canvas {
+  .plan-mindmap__viewport {
     border: 1px solid CanvasText;
   }
 

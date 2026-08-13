@@ -1,9 +1,11 @@
 {
   "schemaVersion": 1,
+  "format": "hourleaf.local-module",
   "id": "hourleaf.local.bilibili-focus",
-  "name": "Bilibili 专注规则示例",
-  "version": "1.0.0",
-  "description": "非官方本地规则：隐藏常见推荐/推广元素，并提供按斜杠键聚焦搜索的示例脚本。",
+  "name": "Bilibili 专注模块",
+  "author": "Hourleaf contributors",
+  "version": "1.1.0",
+  "description": "非官方本地模块：恢复旧版 Bilibili 适配中的推荐流、动态、相关视频、评论、搜索建议与推广元素过滤，并支持按斜杠键聚焦搜索。",
   "matches": [
     "https://www.bilibili.com/*",
     "https://live.bilibili.com/*",
@@ -16,26 +18,25 @@
     ".recommended-container_floor-aside",
     ".feed2 .container",
     ".bili-dyn-list",
+    ".bili-dyn-list__items",
     ".opus-list",
     "#reco_list",
     ".recommend-list-v1",
     ".rec-list",
+    ".video-page-card-small",
     "#comment",
     ".comment-container",
+    ".reply-warp",
+    "bili-comments",
     ".nav-search-suggest",
     ".search-panel",
+    ".suggest-wrap",
     ".ad-report",
     ".banner-card",
+    ".floor-single-card",
     ".video-card-ad-small",
     "a[href*='cm.bilibili.com']"
   ],
   "cssFiles": ["focus.css"],
-  "dnrRules": [
-    {
-      "action": "block",
-      "urlFilter": "||cm.bilibili.com^",
-      "resourceTypes": ["script", "image", "xmlhttprequest"]
-    }
-  ],
   "userScriptFiles": ["focus.user.js"]
 }

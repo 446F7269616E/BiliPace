@@ -25,6 +25,7 @@ export type UsageEligibility = (
 ) => boolean | Promise<boolean>;
 export interface TrackingTarget {
   targetId: TargetId;
+  activePeriodId?: string;
   siteId?: SiteId;
   legacySection?: SectionId;
 }
@@ -123,7 +124,9 @@ export class UsageTracker {
       Promise.resolve(this.isUsageAllowed(url, end, requestedTargetId))
     ])
       .then(([target, allowed]) =>
-        target && allowed ? this.analytics.recordInterval(target.targetId, start, end) : undefined
+        target && allowed
+          ? this.analytics.recordInterval(target.targetId, start, end, target.activePeriodId)
+          : undefined
       )
       .catch(() => undefined);
   }

@@ -213,13 +213,8 @@ svg {
     box-shadow var(--duration-fast);
 }
 
-.btn:hover:not(:disabled) {
-  background: var(--color-surface-soft);
-  border-color: var(--color-text-faint);
-}
-
 .btn:active:not(:disabled) {
-  transform: translateY(1px);
+  transform: scale(0.97);
 }
 
 .btn:disabled {
@@ -234,19 +229,9 @@ svg {
   box-shadow: 0 6px 16px color-mix(in srgb, var(--color-brand) 24%, transparent);
 }
 
-.btn--primary:hover:not(:disabled) {
-  background: var(--color-brand-strong);
-  border-color: transparent;
-}
-
 .btn--soft {
   color: var(--color-brand-strong);
   background: var(--color-brand-soft);
-  border-color: transparent;
-}
-
-.btn--soft:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--color-brand-soft) 82%, var(--color-brand) 18%);
   border-color: transparent;
 }
 
@@ -355,9 +340,26 @@ svg {
     box-shadow var(--duration-fast);
 }
 
-.input:hover,
-.select:hover {
-  border-color: var(--color-text-faint);
+@media (hover: hover) and (pointer: fine) {
+  .btn:hover:not(:disabled) {
+    background: var(--color-surface-soft);
+    border-color: var(--color-text-faint);
+  }
+
+  .btn--primary:hover:not(:disabled) {
+    background: var(--color-brand-strong);
+    border-color: transparent;
+  }
+
+  .btn--soft:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--color-brand-soft) 82%, var(--color-brand) 18%);
+    border-color: transparent;
+  }
+
+  .input:hover,
+  .select:hover {
+    border-color: var(--color-text-faint);
+  }
 }
 
 .input:focus,

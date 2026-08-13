@@ -25,6 +25,7 @@ const extensionEntries = {
   options: path.join(root, "src/options/index.ts"),
   dashboard: path.join(root, "src/dashboard/index.ts"),
   plan: path.join(root, "src/plan/index.ts"),
+  end: path.join(root, "src/end/index.ts"),
   content: path.join(root, "src/content/index.ts")
 };
 
@@ -62,6 +63,7 @@ async function buildExtension(target) {
     }
   }
   await cp(path.join(root, "public/icons"), path.join(outdir, "icons"), { recursive: true });
+  await cp(path.join(root, "_locales"), path.join(outdir, "_locales"), { recursive: true });
   const manifest = await readFile(path.join(root, "manifests", `${target}.json`), "utf8");
   await writeFile(path.join(outdir, "manifest.json"), `${manifest.trim()}\n`, "utf8");
 }

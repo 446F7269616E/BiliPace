@@ -1,3 +1,5 @@
+import { getResolvedLocale, t } from "../shared/i18n";
+
 export type IconName =
   | "arrow"
   | "bar-chart"
@@ -162,9 +164,10 @@ export function formatDuration(totalSeconds: number, compact = false): string {
   const hours = Math.floor(safeSeconds / 3600);
   const minutes = Math.floor((safeSeconds % 3600) / 60);
   if (compact) {
-    if (hours > 0) return `${hours}小时${minutes > 0 ? ` ${minutes}分` : ""}`;
-    if (minutes > 0) return `${minutes}分钟`;
-    return safeSeconds > 0 ? "不足1分钟" : "0分钟";
+    if (hours > 0 && minutes > 0) return t("duration.hoursMinutes", { hours, minutes });
+    if (hours > 0) return t("duration.hours", { hours });
+    if (minutes > 0) return t("duration.minutes", { minutes });
+    return safeSeconds > 0 ? t("duration.lessThanMinute") : t("duration.zeroMinutes");
   }
   return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
 }
@@ -174,6 +177,12 @@ export function formatClockTime(value: string): string {
   const hour = Number(hourText);
   const minute = Number(minuteText);
   if (!Number.isFinite(hour) || !Number.isFinite(minute)) return value;
+  if (getResolvedLocale() === "en") {
+    return new Intl.DateTimeFormat("en", {
+      hour: "numeric",
+      minute: "2-digit"
+    }).format(new Date(2000, 0, 1, hour, minute));
+  }
   return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
 }
 
@@ -198,7 +207,7 @@ export function toast(message: string, type: "success" | "error" = "success"): v
 export function setButtonBusy(
   button: HTMLButtonElement,
   busy: boolean,
-  busyLabel = "正在处理"
+  busyLabel = t("common.processing")
 ): void {
   if (busy) {
     button.dataset.originalLabel = button.textContent ?? "";
@@ -223,5 +232,5 @@ export function assertAppRoot(): HTMLElement {
 
 export function describeError(error: unknown): string {
   console.debug("Hourleaf interface action did not complete", error);
-  return "操作失败，请重试。";
+  return t("common.actionFailed");
 }

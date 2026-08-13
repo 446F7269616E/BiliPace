@@ -1,0 +1,8 @@
+{
+  "extensionName": { "message": "Hourleaf" },
+  "extensionShortName": { "message": "Hourleaf" },
+  "extensionDescription": {
+    "message": "按自己的规则管理网站使用时间，减少分心，数据仅保存在本机。"
+  },
+  "actionTitle": { "message": "Hourleaf" }
+}

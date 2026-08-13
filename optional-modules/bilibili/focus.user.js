@@ -1,8 +1,10 @@
 // ==UserScript==
+// @format       hourleaf.local-module
 // @id           hourleaf.local.bilibili-focus
-// @name         Bilibili 专注规则示例
-// @version      1.0.0
-// @description  非输入状态下按 / 聚焦站内搜索框。
+// @name         Bilibili 专注模块
+// @author       Hourleaf contributors
+// @version      1.1.0
+// @description  非输入状态下按 / 聚焦原生或 Bewly 页面中的站内搜索框。
 // @match        https://www.bilibili.com/*
 // @match        https://search.bilibili.com/*
 // ==/UserScript==
@@ -20,9 +22,11 @@ document.addEventListener(
     ) {
       return;
     }
-    const search = document.querySelector(
-      ".nav-search-input, #nav-searchform input, input[type='search']"
-    );
+    const selectors = ".nav-search-input, #nav-searchform input, input[type='search']";
+    const nativeSearch = document.querySelector(selectors);
+    const bewlyHost = document.querySelector("#bewly");
+    const bewlySearch = bewlyHost?.shadowRoot?.querySelector("#search-wrap input");
+    const search = nativeSearch ?? bewlySearch;
     if (!(search instanceof HTMLInputElement)) return;
     event.preventDefault();
     search.focus();

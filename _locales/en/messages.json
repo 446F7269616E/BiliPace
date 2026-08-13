@@ -1,0 +1,8 @@
+{
+  "extensionName": { "message": "Hourleaf" },
+  "extensionShortName": { "message": "Hourleaf" },
+  "extensionDescription": {
+    "message": "Manage website time with your own rules, reduce distractions, and keep all data on this device."
+  },
+  "actionTitle": { "message": "Hourleaf" }
+}

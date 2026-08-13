@@ -11,6 +11,8 @@ import {
 import type {
   DeepPartial,
   FocusSettings,
+  PeriodRuntimeEntry,
+  PeriodRuntimeStore,
   PlanAccessStore,
   PlanItem,
   PlanItemSource,
@@ -24,7 +26,15 @@ import type {
   TemporaryAccessStore,
   UsageStore
 } from "./types";
-import { isPlanId, isPlanItemSource, MAX_PLAN_ITEMS, normalizePlanUrl } from "./plan";
+import {
+  isPlanCompletionMode,
+  isPlanDurationMinutes,
+  isPlanId,
+  isPlanItemSource,
+  LEGACY_PLAN_DURATION_MINUTES,
+  MAX_PLAN_ITEMS,
+  normalizePlanUrl
+} from "./plan";
 
 export { STORAGE_KEYS } from "./storage-keys";
 
@@ -39,22 +49,32 @@ export class SettingsRepository {
   }
 
   async set(settings: FocusSettings): Promise<FocusSettings> {
-    const normalized = normalizeSettings(settings);
-    await storageSet(this.area, { [STORAGE_KEYS.settings]: normalized });
-    return normalized;
+    return this.enqueue(() => this.write(settings));
   }
 
   async update(patch: DeepPartial<FocusSettings>): Promise<FocusSettings> {
+    return this.mutate((current) => mergeSettings(current, patch));
+  }
+
+  /** Runs a read-modify-write transaction on the repository's shared write queue. */
+  async mutate(
+    mutator: (current: FocusSettings) => FocusSettings | void | Promise<FocusSettings | void>
+  ): Promise<FocusSettings> {
     return this.enqueue(async () => {
       const current = await this.get();
-      return this.set(mergeSettings(current, patch));
+      const next = await mutator(current);
+      return this.write(next ?? current);
     });
   }
 
   async reset(): Promise<FocusSettings> {
-    const defaults = createDefaultSettings();
-    await this.set(defaults);
-    return defaults;
+    return this.enqueue(() => this.write(createDefaultSettings()));
+  }
+
+  private async write(settings: FocusSettings): Promise<FocusSettings> {
+    const normalized = normalizeSettings(settings);
+    await storageSet(this.area, { [STORAGE_KEYS.settings]: normalized });
+    return normalized;
   }
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
@@ -215,6 +235,35 @@ export class TemporaryAccessRepository {
   }
 }
 
+export class PeriodRuntimeRepository {
+  private writeQueue: Promise<unknown> = Promise.resolve();
+
+  constructor(private readonly area: StorageAreaLike = getLocalStorageArea()) {}
+
+  async get(): Promise<PeriodRuntimeStore> {
+    const result = await storageGet(this.area, STORAGE_KEYS.periodRuntime);
+    return normalizePeriodRuntimeStore(result[STORAGE_KEYS.periodRuntime]);
+  }
+
+  async update(
+    mutator: (store: PeriodRuntimeStore) => void | Promise<void>
+  ): Promise<PeriodRuntimeStore> {
+    return this.enqueue(async () => {
+      const store = await this.get();
+      await mutator(store);
+      const normalized = normalizePeriodRuntimeStore(store);
+      await storageSet(this.area, { [STORAGE_KEYS.periodRuntime]: normalized });
+      return normalized;
+    });
+  }
+
+  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.writeQueue.then(operation, operation);
+    this.writeQueue = result.catch(() => undefined);
+    return result;
+  }
+}
+
 export class PlanQueueRepository {
   private writeQueue: Promise<unknown> = Promise.resolve();
 
@@ -283,14 +332,16 @@ export class PlanAccessRepository {
 }
 
 function normalizeUsageStore(value: unknown): UsageStore {
-  const store: UsageStore = { schemaVersion: 2, days: {} };
+  const store: UsageStore = { schemaVersion: 3, days: {} };
   if (!isRecord(value) || !isRecord(value.days)) return store;
 
   for (const [date, rawDay] of Object.entries(value.days)) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !isRecord(rawDay)) continue;
     const rawTargets = isRecord(rawDay.byTarget) ? rawDay.byTarget : {};
     const rawSections = isRecord(rawDay.bySection) ? rawDay.bySection : {};
+    const rawPeriods = isRecord(rawDay.byPeriod) ? rawDay.byPeriod : {};
     const byTarget = normalizeTargetNumbers(rawTargets);
+    const byPeriod = normalizeTargetNumbers(rawPeriods);
     for (const section of LEGACY_SECTIONS) {
       const seconds = normalizeSeconds(rawSections[section]);
       if (seconds > 0) byTarget[legacyTargetId(section)] = seconds;
@@ -298,6 +349,7 @@ function normalizeUsageStore(value: unknown): UsageStore {
     store.days[date] = {
       date,
       byTarget,
+      byPeriod,
       bySection: projectLegacySections(byTarget)
     };
   }
@@ -352,6 +404,44 @@ function normalizeTemporaryAccessStore(value: unknown): TemporaryAccessStore {
   return store;
 }
 
+function normalizePeriodRuntimeStore(value: unknown): PeriodRuntimeStore {
+  const store: PeriodRuntimeStore = { schemaVersion: 1, entries: {} };
+  if (!isRecord(value) || !isRecord(value.entries)) return store;
+  for (const [key, raw] of Object.entries(value.entries).slice(0, 512)) {
+    if (!isRecord(raw) || !isStableRuntimeKey(key)) continue;
+    if (
+      typeof raw.date !== "string" ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(raw.date) ||
+      typeof raw.targetId !== "string" ||
+      !isStableTargetId(raw.targetId) ||
+      typeof raw.periodId !== "string" ||
+      !isStableTargetId(raw.periodId)
+    ) {
+      continue;
+    }
+    const entry: PeriodRuntimeEntry = {
+      date: raw.date,
+      targetId: raw.targetId,
+      periodId: raw.periodId,
+      unlockedGroups: isNonNegativeNumber(raw.unlockedGroups)
+        ? Math.max(1, Math.min(24, Math.floor(raw.unlockedGroups)))
+        : 1
+    };
+    if (isTimestamp(raw.waitStartedAt)) entry.waitStartedAt = raw.waitStartedAt;
+    if (raw.flowUsed === true) entry.flowUsed = true;
+    if (raw.flowContinuationKind === "minutes" || raw.flowContinuationKind === "video-end") {
+      entry.flowContinuationKind = raw.flowContinuationKind;
+    }
+    // Older builds persisted video-end as a 15-minute timer. Ignore that timer
+    // while retaining minute-continuation expiries under the new explicit contract.
+    if (entry.flowContinuationKind === "minutes" && isTimestamp(raw.flowExpiresAt)) {
+      entry.flowExpiresAt = raw.flowExpiresAt;
+    }
+    store.entries[key] = entry;
+  }
+  return store;
+}
+
 export function normalizePlanQueueStore(value: unknown): PlanQueueStore {
   const store: PlanQueueStore = { schemaVersion: 1, items: [] };
   if (!isRecord(value) || !Array.isArray(value.items)) return store;
@@ -384,6 +474,10 @@ export function normalizePlanQueueStore(value: unknown): PlanQueueStore {
       status,
       order: isNonNegativeNumber(raw.order) ? Math.floor(raw.order) : candidates.length,
       source: isPlanItemSource(raw.source) ? raw.source : ("manual" satisfies PlanItemSource),
+      scheduledDurationMinutes: isPlanDurationMinutes(raw.scheduledDurationMinutes)
+        ? raw.scheduledDurationMinutes
+        : LEGACY_PLAN_DURATION_MINUTES,
+      completionMode: isPlanCompletionMode(raw.completionMode) ? raw.completionMode : "strict",
       addedAt,
       completedAt
     });
@@ -409,15 +503,33 @@ export function normalizePlanAccessStore(value: unknown): PlanAccessStore {
   ) {
     return store;
   }
+  const completionMode = isPlanCompletionMode(grant.completionMode)
+    ? grant.completionMode
+    : "strict";
+  const flowContinuationKind =
+    completionMode === "flow" &&
+    (grant.flowContinuationKind === "minutes" || grant.flowContinuationKind === "video-end")
+      ? grant.flowContinuationKind
+      : undefined;
   store.activeGrant = {
     itemId: grant.itemId,
     url: url.href,
     origin: url.origin,
     ...(isLegacyIdentity(grant.bvid) ? { bvid: grant.bvid } : {}),
     grantedAt: grant.grantedAt,
-    expiresAt: grant.expiresAt
+    expiresAt: flowContinuationKind === "video-end" ? Number.MAX_SAFE_INTEGER : grant.expiresAt,
+    scheduledDurationMinutes: isPlanDurationMinutes(grant.scheduledDurationMinutes)
+      ? grant.scheduledDurationMinutes
+      : legacyGrantDurationMinutes(grant.grantedAt, grant.expiresAt),
+    completionMode,
+    ...(flowContinuationKind ? { flowContinuationKind } : {})
   };
   return store;
+}
+
+function legacyGrantDurationMinutes(grantedAt: number, expiresAt: number): number {
+  const duration = Math.ceil((expiresAt - grantedAt) / 60_000);
+  return isPlanDurationMinutes(duration) ? duration : LEGACY_PLAN_DURATION_MINUTES;
 }
 
 const LEGACY_SECTIONS: readonly SectionId[] = [
@@ -457,13 +569,19 @@ function projectLegacySections(value: Record<TargetId, number>): Record<SectionI
 }
 
 function serializeUsageStore(store: UsageStore): {
-  schemaVersion: 2;
-  days: Record<string, { date: string; byTarget: Record<TargetId, number> }>;
+  schemaVersion: 3;
+  days: Record<
+    string,
+    { date: string; byTarget: Record<TargetId, number>; byPeriod: Record<string, number> }
+  >;
 } {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     days: Object.fromEntries(
-      Object.entries(store.days).map(([date, day]) => [date, { date, byTarget: day.byTarget }])
+      Object.entries(store.days).map(([date, day]) => [
+        date,
+        { date, byTarget: day.byTarget, byPeriod: day.byPeriod }
+      ])
     )
   };
 }
@@ -486,6 +604,10 @@ function isSectionId(value: string): value is SectionId {
 
 function isStableTargetId(value: string): boolean {
   return value.length <= 128 && /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value);
+}
+
+function isStableRuntimeKey(value: string): boolean {
+  return value.length <= 300 && /^[A-Za-z0-9._:|-]+$/.test(value);
 }
 
 function isLegacyIdentity(value: unknown): value is string {

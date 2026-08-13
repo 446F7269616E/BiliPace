@@ -25,15 +25,23 @@ if (!/^[a-z0-9][a-z0-9-]*$/.test(packageName)) {
 }
 
 const releaseDir = path.join(root, "dist", "packages");
+const moduleReleaseDir = path.join(root, "dist", "modules");
 await rm(releaseDir, { recursive: true, force: true });
+await rm(moduleReleaseDir, { recursive: true, force: true });
 await mkdir(releaseDir, { recursive: true });
+await mkdir(moduleReleaseDir, { recursive: true });
+/** @type {string[]} */
 const checksums = [];
+/** @type {string[]} */
+const moduleChecksums = [];
 
 for (const target of ["chromium", "firefox", "safari"]) {
   await assertStoreCandidate(target, path.join(root, "dist", target));
   await archiveDirectory(
     path.join(root, "dist", target),
-    `${packageName}-${version}-${target}.zip`
+    `${packageName}-${version}-${target}.zip`,
+    releaseDir,
+    checksums
   );
 }
 
@@ -56,8 +64,8 @@ async function assertStoreCandidate(target, sourceDir) {
   }
   const permissions = toStringSet(manifest.permissions);
   const optionalPermissions = toStringSet(manifest.optional_permissions);
-  if (!permissions.has("declarativeNetRequestWithHostAccess")) {
-    throw new Error(`${target} store candidate is missing the safe DNR adapter permission`);
+  if (permissions.has("declarativeNetRequestWithHostAccess")) {
+    throw new Error(`${target} store candidate retains an unused DNR permission`);
   }
   if (target === "chromium" && !permissions.has("userScripts")) {
     throw new Error("Chromium user-provided code must use the User Scripts API");
@@ -80,9 +88,78 @@ function toStringSet(value) {
 
 await writeFile(path.join(releaseDir, "SHA256SUMS"), `${checksums.join("\n")}\n`, "utf8");
 
-/** @param {string} sourceDir @param {string} filename */
-async function archiveDirectory(sourceDir, filename) {
-  const archive = path.join(releaseDir, filename);
+const optionalModulesDir = path.join(root, "optional-modules");
+const optionalModuleEntries = await readdir(optionalModulesDir, { withFileTypes: true });
+for (const entry of optionalModuleEntries) {
+  if (!entry.isDirectory()) continue;
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(entry.name)) {
+    throw new Error(`Invalid optional module directory: ${entry.name}`);
+  }
+  const sourceDir = path.join(optionalModulesDir, entry.name);
+  const moduleVersion = await assertModuleCandidate(sourceDir);
+  await archiveDirectory(
+    sourceDir,
+    `hourleaf-module-${entry.name}-${moduleVersion}.zip`,
+    moduleReleaseDir,
+    moduleChecksums
+  );
+}
+if (moduleChecksums.length === 0) throw new Error("No optional module release candidates found");
+await writeFile(
+  path.join(moduleReleaseDir, "SHA256SUMS"),
+  `${moduleChecksums.join("\n")}\n`,
+  "utf8"
+);
+
+/** @param {string} sourceDir */
+async function assertModuleCandidate(sourceDir) {
+  /** @type {unknown} */
+  const rawManifest = JSON.parse(
+    await readFile(path.join(sourceDir, "hourleaf-module.json"), "utf8")
+  );
+  if (!rawManifest || typeof rawManifest !== "object") {
+    throw new Error(`${sourceDir} has an invalid module manifest`);
+  }
+  const manifest = /** @type {Record<string, unknown>} */ (rawManifest);
+  if (
+    manifest.schemaVersion !== 1 ||
+    manifest.format !== "hourleaf.local-module" ||
+    typeof manifest.author !== "string" ||
+    manifest.author.trim().length === 0 ||
+    typeof manifest.version !== "string" ||
+    !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(manifest.version)
+  ) {
+    throw new Error(`${sourceDir} is not a canonical Hourleaf local module`);
+  }
+  const referencedFiles = [
+    ...toStringSet(manifest.cssFiles),
+    ...toStringSet(manifest.userScriptFiles)
+  ];
+  if (referencedFiles.some((filename) => !isSafeModuleFilename(filename))) {
+    throw new Error(`${sourceDir} contains an unsafe module file reference`);
+  }
+  const expectedFiles = new Set(["hourleaf-module.json", ...referencedFiles]);
+  const entries = await readdir(sourceDir, { withFileTypes: true });
+  if (
+    entries.some((entry) => !entry.isFile() || !expectedFiles.has(entry.name)) ||
+    expectedFiles.size !== entries.length
+  ) {
+    throw new Error(`${sourceDir} contains missing or unexpected release files`);
+  }
+  return manifest.version;
+}
+
+/** @param {string} filename */
+function isSafeModuleFilename(filename) {
+  return (
+    filename === path.basename(filename) &&
+    /^[A-Za-z0-9][A-Za-z0-9._-]*\.(?:css|user\.js)$/.test(filename)
+  );
+}
+
+/** @param {string} sourceDir @param {string} filename @param {string} outputDir @param {string[]} checksumList */
+async function archiveDirectory(sourceDir, filename, outputDir, checksumList) {
+  const archive = path.join(outputDir, filename);
   await rm(archive, { force: true });
   const result = spawnSync("zip", ["-q", "-r", archive, "."], {
     cwd: sourceDir,
@@ -92,5 +169,5 @@ async function archiveDirectory(sourceDir, filename) {
   const digest = createHash("sha256")
     .update(await readFile(archive))
     .digest("hex");
-  checksums.push(`${digest}  ${filename}`);
+  checksumList.push(`${digest}  ${filename}`);
 }

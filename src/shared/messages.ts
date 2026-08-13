@@ -3,6 +3,7 @@ import type {
   DeepPartial,
   FocusSettings,
   PageDecision,
+  PeriodRuntimeStatus,
   PlanItemInput,
   PlanItemPatch,
   PlanItemSource,
@@ -18,16 +19,20 @@ import type {
 } from "./types";
 import {
   isPlanId,
+  isPlanCompletionMode,
+  isPlanDurationMinutes,
+  isPlanFlowExtensionMinutes,
   isPlanItemSource,
   MAX_PLAN_IMPORT_ITEMS,
   MAX_PLAN_ITEMS,
   MAX_PLAN_TITLE_LENGTH,
   normalizePlanItemInput
 } from "./plan";
-import type {
-  LocalModuleDefinition,
-  LocalModuleSnapshot,
-  LocalPageRules
+import {
+  LOCAL_MODULE_IMPORT_RISK_CODE,
+  type LocalModuleDefinition,
+  type LocalModuleSnapshot,
+  type LocalPageRules
 } from "../modules/local/types";
 import { normalizeLocalModuleDefinition } from "../modules/local/validation";
 
@@ -44,6 +49,35 @@ export interface MessageContract {
   CLEAR_USAGE: { request: Record<never, unknown>; response: { cleared: true } };
   GET_PAGE_DECISION: { request: { url: string; targetId?: TargetId }; response: PageDecision };
   GRANT_TEMPORARY_ACCESS: { request: { url: string; targetId?: TargetId }; response: PageDecision };
+  GRANT_VISIT_CONFIRMATION: {
+    request: { url: string; siteId: string };
+    response: { granted: true; url: string };
+  };
+  GET_PERIOD_RUNTIME: {
+    request: { targetId: TargetId; periodId: string };
+    response: PeriodRuntimeStatus;
+  };
+  START_PERIOD_GROUP_WAIT: {
+    request: { targetId: TargetId; periodId: string };
+    response: PeriodRuntimeStatus;
+  };
+  UNLOCK_PERIOD_GROUP: {
+    request: { targetId: TargetId; periodId: string; proof?: string };
+    response: PeriodRuntimeStatus;
+  };
+  GRANT_PERIOD_FLOW: {
+    request: {
+      url: string;
+      targetId: TargetId;
+      periodId: string;
+      continuation: { kind: "minutes"; minutes: number } | { kind: "video-end" };
+    };
+    response: PageDecision;
+  };
+  STOP_PERIOD_FLOW: {
+    request: { url: string; targetId: TargetId; periodId: string };
+    response: PageDecision;
+  };
   GET_MANAGED_SITES: {
     request: Record<never, unknown>;
     response: { sites: Record<string, ManagedSite>; targets: Record<string, SiteTargetSettings> };
@@ -53,7 +87,14 @@ export interface MessageContract {
     response: { granted: boolean; origin: string; site?: ManagedSite; target?: SiteTargetSettings };
   };
   UPDATE_MANAGED_SITE: {
-    request: { siteId: string; patch: { label?: string; enabled?: boolean } };
+    request: {
+      siteId: string;
+      patch: {
+        label?: string;
+        restrictionMode?: "lenient" | "flow" | "strict";
+        visitConfirmation?: { enabled: boolean; waitSeconds: number };
+      };
+    };
     response: ManagedSite;
   };
   UPDATE_SITE_TARGET: {
@@ -73,7 +114,11 @@ export interface MessageContract {
   UNINSTALL_SITE_MODULE: { request: { moduleId: string }; response: SiteModuleStore };
   GET_LOCAL_MODULES: { request: Record<never, unknown>; response: LocalModuleSnapshot };
   IMPORT_LOCAL_MODULE: {
-    request: { module: LocalModuleDefinition };
+    request: {
+      module: LocalModuleDefinition;
+      /** Fixed proof that the import entrypoint displayed and accepted the risk disclosure. */
+      riskAcknowledgement: typeof LOCAL_MODULE_IMPORT_RISK_CODE;
+    };
     response: LocalModuleSnapshot;
   };
   SET_LOCAL_MODULE_ENABLED: {
@@ -85,7 +130,12 @@ export interface MessageContract {
   GET_TRACKING_STATUS: { request: Record<never, unknown>; response: TrackingStatus };
   GET_PLAN_STATE: { request: Record<never, unknown>; response: PlanState };
   SET_PLAN_MODE: {
-    request: { enabled?: boolean; watchDurationMinutes?: number };
+    request: {
+      enabled?: boolean;
+      watchDurationMinutes?: number;
+      defaultCompletionMode?: "lenient" | "flow" | "strict";
+      autoCompleteOnStart?: boolean;
+    };
     response: PlanState;
   };
   ADD_PLAN_ITEM: { request: PlanItemInput; response: PlanState };
@@ -110,6 +160,23 @@ export interface MessageContract {
   GET_PLAN_NAVIGATION_DECISION: {
     request: { url?: string; bvid?: string };
     response: PlanNavigationDecision;
+  };
+  CONTINUE_PLAN_FLOW: {
+    request: {
+      itemId: string;
+      continuation: { kind: "minutes"; minutes: number } | { kind: "video-end" };
+      url?: string;
+    };
+    response: {
+      state: PlanState;
+      url: string;
+      expiresAt: number;
+      continuationKind: "minutes" | "video-end";
+    };
+  };
+  STOP_PLAN_FLOW: {
+    request: { itemId: string; reason: "video-ended" | "user-ended"; url?: string };
+    response: PlanState;
   };
   IMPORT_PLAN_ITEMS: {
     request: { items: PlanItemInput[]; source?: PlanItemSource };
@@ -230,6 +297,96 @@ export function parseMessageRequest(
         ...(isOpaqueId(payload.targetId) ? { targetId: payload.targetId } : {})
       };
       break;
+    case "GRANT_VISIT_CONFIRMATION":
+      if (
+        !hasOnlyKeys(payload, ["url", "siteId"]) ||
+        !isHttpUrl(payload.url) ||
+        !isOpaqueId(payload.siteId)
+      ) {
+        return null;
+      }
+      request = { type: value.type, url: payload.url, siteId: payload.siteId };
+      break;
+    case "GET_PERIOD_RUNTIME":
+    case "START_PERIOD_GROUP_WAIT":
+      if (
+        !hasOnlyKeys(payload, ["targetId", "periodId"]) ||
+        !isOpaqueId(payload.targetId) ||
+        !isOpaqueId(payload.periodId)
+      ) {
+        return null;
+      }
+      request = { type: value.type, targetId: payload.targetId, periodId: payload.periodId };
+      break;
+    case "UNLOCK_PERIOD_GROUP":
+      if (
+        !hasOnlyKeys(payload, ["targetId", "periodId", "proof"]) ||
+        !isOpaqueId(payload.targetId) ||
+        !isOpaqueId(payload.periodId) ||
+        (payload.proof !== undefined &&
+          (typeof payload.proof !== "string" || payload.proof.length > 128))
+      ) {
+        return null;
+      }
+      request = {
+        type: value.type,
+        targetId: payload.targetId,
+        periodId: payload.periodId,
+        ...(typeof payload.proof === "string" ? { proof: payload.proof } : {})
+      };
+      break;
+    case "GRANT_PERIOD_FLOW": {
+      if (
+        !hasOnlyKeys(payload, ["url", "targetId", "periodId", "continuation"]) ||
+        !isHttpUrl(payload.url) ||
+        !isOpaqueId(payload.targetId) ||
+        !isOpaqueId(payload.periodId) ||
+        !isRecord(payload.continuation)
+      ) {
+        return null;
+      }
+      const continuation = payload.continuation;
+      if (
+        continuation.kind === "minutes" &&
+        hasOnlyKeys(continuation, ["kind", "minutes"]) &&
+        isBoundedInteger(continuation.minutes, 1, 15)
+      ) {
+        request = {
+          type: value.type,
+          url: payload.url,
+          targetId: payload.targetId,
+          periodId: payload.periodId,
+          continuation: { kind: "minutes", minutes: continuation.minutes }
+        };
+      } else if (continuation.kind === "video-end" && hasOnlyKeys(continuation, ["kind"])) {
+        request = {
+          type: value.type,
+          url: payload.url,
+          targetId: payload.targetId,
+          periodId: payload.periodId,
+          continuation: { kind: "video-end" }
+        };
+      } else {
+        return null;
+      }
+      break;
+    }
+    case "STOP_PERIOD_FLOW":
+      if (
+        !hasOnlyKeys(payload, ["url", "targetId", "periodId"]) ||
+        !isHttpUrl(payload.url) ||
+        !isOpaqueId(payload.targetId) ||
+        !isOpaqueId(payload.periodId)
+      ) {
+        return null;
+      }
+      request = {
+        type: value.type,
+        url: payload.url,
+        targetId: payload.targetId,
+        periodId: payload.periodId
+      };
+      break;
     case "ADD_MANAGED_SITE":
       if (!isHttpUrl(payload.url) || (payload.label !== undefined && !isLabel(payload.label)))
         return null;
@@ -243,12 +400,28 @@ export function parseMessageRequest(
       if (
         !isOpaqueId(payload.siteId) ||
         !isRecord(payload.patch) ||
-        !hasOnlyKeys(payload.patch, ["label", "enabled"])
+        !hasOnlyKeys(payload.patch, ["label", "restrictionMode", "visitConfirmation"])
       )
         return null;
       if (payload.patch.label !== undefined && !isLabel(payload.patch.label)) return null;
-      if (payload.patch.enabled !== undefined && typeof payload.patch.enabled !== "boolean")
+      if (
+        payload.patch.restrictionMode !== undefined &&
+        payload.patch.restrictionMode !== "lenient" &&
+        payload.patch.restrictionMode !== "flow" &&
+        payload.patch.restrictionMode !== "strict"
+      ) {
         return null;
+      }
+      if (payload.patch.visitConfirmation !== undefined) {
+        if (
+          !isRecord(payload.patch.visitConfirmation) ||
+          !hasOnlyKeys(payload.patch.visitConfirmation, ["enabled", "waitSeconds"]) ||
+          typeof payload.patch.visitConfirmation.enabled !== "boolean" ||
+          !isBoundedInteger(payload.patch.visitConfirmation.waitSeconds, 0, 60)
+        ) {
+          return null;
+        }
+      }
       request = { type: value.type, siteId: payload.siteId, patch: payload.patch };
       break;
     case "UPDATE_SITE_TARGET":
@@ -261,6 +434,7 @@ export function parseMessageRequest(
           "accessPolicy",
           "dailyLimitMinutes",
           "schedules",
+          "timePeriods",
           "temporaryAccess"
         ]) ||
         !isBoundedJson(payload.patch)
@@ -297,10 +471,19 @@ export function parseMessageRequest(
       request = { type: value.type, moduleId: payload.moduleId };
       break;
     case "IMPORT_LOCAL_MODULE": {
-      if (!hasOnlyKeys(payload, ["module"])) return null;
+      if (
+        !hasOnlyKeys(payload, ["module", "riskAcknowledgement"]) ||
+        payload.riskAcknowledgement !== LOCAL_MODULE_IMPORT_RISK_CODE
+      ) {
+        return null;
+      }
       const module = normalizeLocalModuleDefinition(payload.module);
       if (!module) return null;
-      request = { type: value.type, module };
+      request = {
+        type: value.type,
+        module,
+        riskAcknowledgement: LOCAL_MODULE_IMPORT_RISK_CODE
+      };
       break;
     }
     case "SET_LOCAL_MODULE_ENABLED":
@@ -322,20 +505,39 @@ export function parseMessageRequest(
       request = { type: value.type, url: payload.url };
       break;
     case "SET_PLAN_MODE": {
-      if (!hasOnlyKeys(payload, ["enabled", "watchDurationMinutes"])) return null;
+      if (
+        !hasOnlyKeys(payload, [
+          "enabled",
+          "watchDurationMinutes",
+          "defaultCompletionMode",
+          "autoCompleteOnStart"
+        ])
+      ) {
+        return null;
+      }
       const hasEnabled = typeof payload.enabled === "boolean";
       const hasDuration = isBoundedInteger(payload.watchDurationMinutes, 1, 360);
+      const hasDefaultCompletionMode = isPlanCompletionMode(payload.defaultCompletionMode);
+      const hasAutoComplete = typeof payload.autoCompleteOnStart === "boolean";
       if (
-        (!hasEnabled && !hasDuration) ||
+        (!hasEnabled && !hasDuration && !hasDefaultCompletionMode && !hasAutoComplete) ||
         (payload.enabled !== undefined && !hasEnabled) ||
-        (payload.watchDurationMinutes !== undefined && !hasDuration)
+        (payload.watchDurationMinutes !== undefined && !hasDuration) ||
+        (payload.defaultCompletionMode !== undefined && !hasDefaultCompletionMode) ||
+        (payload.autoCompleteOnStart !== undefined && !hasAutoComplete)
       ) {
         return null;
       }
       request = {
         type: value.type,
         ...(hasEnabled ? { enabled: payload.enabled as boolean } : {}),
-        ...(hasDuration ? { watchDurationMinutes: payload.watchDurationMinutes as number } : {})
+        ...(hasDuration ? { watchDurationMinutes: payload.watchDurationMinutes as number } : {}),
+        ...(hasDefaultCompletionMode
+          ? {
+              defaultCompletionMode: payload.defaultCompletionMode as "lenient" | "flow" | "strict"
+            }
+          : {}),
+        ...(hasAutoComplete ? { autoCompleteOnStart: payload.autoCompleteOnStart as boolean } : {})
       };
       break;
     }
@@ -397,6 +599,57 @@ export function parseMessageRequest(
         type: value.type,
         ...(typeof payload.url === "string" ? { url: payload.url } : {}),
         ...(isLegacyIdentity(payload.bvid) ? { bvid: payload.bvid } : {})
+      };
+      break;
+    case "CONTINUE_PLAN_FLOW": {
+      if (
+        !hasOnlyKeys(payload, ["itemId", "continuation", "url"]) ||
+        !isPlanId(payload.itemId) ||
+        !isRecord(payload.continuation) ||
+        (payload.url !== undefined && !isHttpUrl(payload.url))
+      ) {
+        return null;
+      }
+      const continuation = payload.continuation;
+      if (continuation.kind === "minutes") {
+        if (
+          !hasOnlyKeys(continuation, ["kind", "minutes"]) ||
+          !isPlanFlowExtensionMinutes(continuation.minutes)
+        ) {
+          return null;
+        }
+        request = {
+          type: value.type,
+          itemId: payload.itemId,
+          continuation: { kind: "minutes", minutes: continuation.minutes },
+          ...(typeof payload.url === "string" ? { url: payload.url } : {})
+        };
+      } else if (continuation.kind === "video-end" && hasOnlyKeys(continuation, ["kind"])) {
+        request = {
+          type: value.type,
+          itemId: payload.itemId,
+          continuation: { kind: "video-end" },
+          ...(typeof payload.url === "string" ? { url: payload.url } : {})
+        };
+      } else {
+        return null;
+      }
+      break;
+    }
+    case "STOP_PLAN_FLOW":
+      if (
+        !hasOnlyKeys(payload, ["itemId", "reason", "url"]) ||
+        !isPlanId(payload.itemId) ||
+        (payload.url !== undefined && !isHttpUrl(payload.url)) ||
+        (payload.reason !== "video-ended" && payload.reason !== "user-ended")
+      ) {
+        return null;
+      }
+      request = {
+        type: value.type,
+        itemId: payload.itemId,
+        reason: payload.reason,
+        ...(typeof payload.url === "string" ? { url: payload.url } : {})
       };
       break;
     case "IMPORT_PLAN_ITEMS": {
@@ -470,18 +723,43 @@ function createRequestId(): string {
 }
 
 function parsePlanItemInput(value: unknown, fallbackSource?: PlanItemSource): PlanItemInput | null {
-  if (!isRecord(value) || !hasOnlyKeys(value, ["title", "url", "bvid", "source"])) return null;
-  if (!normalizePlanItemInput(value, fallbackSource)) return null;
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, [
+      "title",
+      "url",
+      "bvid",
+      "source",
+      "scheduledDurationMinutes",
+      "completionMode"
+    ])
+  ) {
+    return null;
+  }
+  const normalized = normalizePlanItemInput(value, fallbackSource);
+  if (!normalized) return null;
   return {
     ...(typeof value.title === "string" ? { title: value.title } : {}),
     ...(typeof value.url === "string" ? { url: value.url } : {}),
     ...(typeof value.bvid === "string" ? { bvid: value.bvid } : {}),
-    ...(isPlanItemSource(value.source) ? { source: value.source } : {})
+    ...(isPlanItemSource(value.source) ? { source: value.source } : {}),
+    scheduledDurationMinutes: normalized.scheduledDurationMinutes,
+    completionMode: normalized.completionMode
   } as PlanItemInput;
 }
 
 function parsePlanItemPatch(value: Record<string, unknown>): PlanItemPatch | null {
-  if (!hasOnlyKeys(value, ["title", "url", "bvid", "source"]) || Object.keys(value).length < 1) {
+  if (
+    !hasOnlyKeys(value, [
+      "title",
+      "url",
+      "bvid",
+      "source",
+      "scheduledDurationMinutes",
+      "completionMode"
+    ]) ||
+    Object.keys(value).length < 1
+  ) {
     return null;
   }
   if (
@@ -489,22 +767,23 @@ function parsePlanItemPatch(value: Record<string, unknown>): PlanItemPatch | nul
       (typeof value.title !== "string" || value.title.length > MAX_PLAN_TITLE_LENGTH)) ||
     (value.url !== undefined && typeof value.url !== "string") ||
     (value.bvid !== undefined && !isLegacyIdentity(value.bvid)) ||
-    (value.source !== undefined && !isPlanItemSource(value.source))
+    (value.source !== undefined && !isPlanItemSource(value.source)) ||
+    (value.scheduledDurationMinutes !== undefined &&
+      !isPlanDurationMinutes(value.scheduledDurationMinutes)) ||
+    (value.completionMode !== undefined && !isPlanCompletionMode(value.completionMode))
   ) {
     return null;
   }
-  if (value.url !== undefined || value.bvid !== undefined) {
-    const identity = normalizePlanItemInput({
-      ...(typeof value.url === "string" ? { url: value.url } : {}),
-      ...(isLegacyIdentity(value.bvid) ? { bvid: value.bvid } : {})
-    });
-    if (!identity) return null;
-  }
+  if (value.url !== undefined && !isHttpUrl(value.url)) return null;
   return {
     ...(typeof value.title === "string" ? { title: value.title } : {}),
     ...(typeof value.url === "string" ? { url: value.url } : {}),
     ...(isLegacyIdentity(value.bvid) ? { bvid: value.bvid } : {}),
-    ...(isPlanItemSource(value.source) ? { source: value.source } : {})
+    ...(isPlanItemSource(value.source) ? { source: value.source } : {}),
+    ...(isPlanDurationMinutes(value.scheduledDurationMinutes)
+      ? { scheduledDurationMinutes: value.scheduledDurationMinutes }
+      : {}),
+    ...(isPlanCompletionMode(value.completionMode) ? { completionMode: value.completionMode } : {})
   };
 }
 

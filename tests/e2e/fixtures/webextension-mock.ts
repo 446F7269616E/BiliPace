@@ -1,8 +1,19 @@
 import type { BrowserContext } from "@playwright/test";
 
 export interface MockSettings {
-  schemaVersion: 3;
+  schemaVersion: 4;
   enabled: boolean;
+  showRemainingMinutesOnIcon: boolean;
+  locale: "system" | "zh-CN" | "en";
+  endPage: {
+    view: "dashboard" | "message" | "minimal";
+    motivationalMessage: string;
+    groupUnlock: {
+      method: "none" | "wait" | "math" | "password";
+      waitMinutes: number;
+      passwordVerifier: string;
+    };
+  };
   sites: Record<
     string,
     {
@@ -11,6 +22,8 @@ export interface MockSettings {
       hostname: string;
       label: string;
       enabled: boolean;
+      restrictionMode: "lenient" | "flow" | "strict";
+      visitConfirmation?: { enabled: boolean; waitSeconds: number };
       targetIds: string[];
       createdAt: number;
       updatedAt: number;
@@ -25,6 +38,17 @@ export interface MockSettings {
       enabled: boolean;
       dailyLimitMinutes: number | null;
       schedules: unknown[];
+      timePeriods: Array<{
+        id: string;
+        name: string;
+        enabled: boolean;
+        days: number[];
+        startTime: string;
+        endTime: string;
+        behavior: "timed" | "always-allow" | "always-block";
+        limitMinutes: number | null;
+        groupCount: number;
+      }>;
       temporaryAccess: { enabled: boolean; durationMinutes: number; maxUsesPerDay: number };
       moduleId?: string;
       moduleSectionId?: string;
@@ -35,7 +59,12 @@ export interface MockSettings {
     { enabled: boolean; dailyLimitMinutes: number | null; schedules: unknown[] }
   >;
   temporaryAccess: { enabled: boolean; durationMinutes: number; maxUsesPerDay: number };
-  planMode: { enabled: boolean; watchDurationMinutes: number };
+  planMode: {
+    enabled: boolean;
+    watchDurationMinutes: number;
+    defaultCompletionMode: "lenient" | "flow" | "strict";
+    autoCompleteOnStart: boolean;
+  };
   contentFilters: {
     enabled: boolean;
     hiddenElements: Record<string, boolean>;
@@ -45,8 +74,15 @@ export interface MockSettings {
 }
 
 const initialSettings: MockSettings = {
-  schemaVersion: 3,
+  schemaVersion: 4,
   enabled: true,
+  showRemainingMinutesOnIcon: true,
+  locale: "zh-CN",
+  endPage: {
+    view: "dashboard",
+    motivationalMessage: "",
+    groupUnlock: { method: "none", waitMinutes: 5, passwordVerifier: "" }
+  },
   sites: {
     "site:bilibili": {
       id: "site:bilibili",
@@ -54,6 +90,7 @@ const initialSettings: MockSettings = {
       hostname: "www.bilibili.com",
       label: "哔哩哔哩",
       enabled: true,
+      restrictionMode: "strict",
       targetIds: [
         "module:bilibili:home",
         "module:bilibili:dynamic",
@@ -77,6 +114,19 @@ const initialSettings: MockSettings = {
         enabled: ["home", "dynamic", "popular"].includes(section),
         dailyLimitMinutes: section === "home" ? 45 : null,
         schedules: [],
+        timePeriods: [
+          {
+            id: `period:${section}:all-day`,
+            name: "全天",
+            enabled: true,
+            days: [0, 1, 2, 3, 4, 5, 6],
+            startTime: "00:00",
+            endTime: "00:00",
+            behavior: "timed",
+            limitMinutes: section === "home" ? 45 : null,
+            groupCount: 1
+          }
+        ],
         temporaryAccess: { enabled: true, durationMinutes: 5, maxUsesPerDay: 3 },
         moduleId: "hourleaf.site.bilibili",
         moduleSectionId: section
@@ -93,7 +143,12 @@ const initialSettings: MockSettings = {
     search: { enabled: false, dailyLimitMinutes: null, schedules: [] }
   },
   temporaryAccess: { enabled: true, durationMinutes: 5, maxUsesPerDay: 3 },
-  planMode: { enabled: false, watchDurationMinutes: 45 },
+  planMode: {
+    enabled: false,
+    watchDurationMinutes: 45,
+    defaultCompletionMode: "flow",
+    autoCompleteOnStart: false
+  },
   contentFilters: {
     enabled: true,
     hiddenElements: {
@@ -124,6 +179,19 @@ export async function installWebExtensionMock(context: BrowserContext): Promise<
       schemaVersion: 1;
       installations: Record<string, Record<string, unknown>>;
     } = { schemaVersion: 1, installations: {} };
+    let planItems: Array<{
+      id: string;
+      url: string;
+      origin: string;
+      title: string;
+      status: "pending" | "completed";
+      order: number;
+      source: "manual" | "watch-later" | "favorite";
+      scheduledDurationMinutes: number;
+      completionMode: "lenient" | "flow" | "strict";
+      addedAt: number;
+      completedAt: number | null;
+    }> = [];
     const localStore: Record<string, unknown> = {};
 
     const storageArea = {
@@ -166,15 +234,27 @@ export async function installWebExtensionMock(context: BrowserContext): Promise<
         requestId?: string;
         type?: string;
         payload?: {
-          patch?: Partial<MockSettings>;
+          patch?: Partial<MockSettings> & {
+            restrictionMode?: "lenient" | "flow" | "strict";
+            timePeriods?: MockSettings["targets"][string]["timePeriods"];
+          };
           module?: Record<string, unknown>;
           period?: string;
           enabled?: boolean;
           watchDurationMinutes?: number;
+          defaultCompletionMode?: "lenient" | "flow" | "strict";
+          autoCompleteOnStart?: boolean;
           url?: string;
           siteId?: string;
+          targetId?: string;
           moduleId?: string;
           action?: string;
+          id?: string;
+          title?: string;
+          source?: "manual" | "watch-later" | "favorite";
+          scheduledDurationMinutes?: number;
+          completionMode?: "lenient" | "flow" | "strict";
+          completed?: boolean;
         };
       }) {
         let result: unknown;
@@ -260,6 +340,38 @@ export async function installWebExtensionMock(context: BrowserContext): Promise<
               origin: new URL(String(payload.url ?? "https://example.com")).origin
             });
             break;
+          case "UPDATE_MANAGED_SITE": {
+            const siteId = String(payload.siteId ?? "");
+            const site = settings.sites[siteId];
+            if (!site) {
+              result = {
+                ok: false,
+                error: { code: "NOT_FOUND", message: "Website is not configured" }
+              };
+              break;
+            }
+            settings.sites[siteId] = {
+              ...site,
+              ...(payload.patch ?? {}),
+              updatedAt: Date.now()
+            };
+            result = ok(settings.sites[siteId]);
+            break;
+          }
+          case "UPDATE_SITE_TARGET": {
+            const targetId = String(payload.targetId ?? "");
+            const target = settings.targets[targetId];
+            if (!target) {
+              result = {
+                ok: false,
+                error: { code: "NOT_FOUND", message: "Website target is not configured" }
+              };
+              break;
+            }
+            settings.targets[targetId] = { ...target, ...(payload.patch ?? {}) };
+            result = ok(settings.targets[targetId]);
+            break;
+          }
           case "UPDATE_SETTINGS":
             settings = {
               ...settings,
@@ -271,6 +383,18 @@ export async function installWebExtensionMock(context: BrowserContext): Promise<
               temporaryAccess: {
                 ...settings.temporaryAccess,
                 ...(payload.patch?.temporaryAccess ?? {})
+              },
+              planMode: {
+                ...settings.planMode,
+                ...(payload.patch?.planMode ?? {})
+              },
+              endPage: {
+                ...settings.endPage,
+                ...(payload.patch?.endPage ?? {}),
+                groupUnlock: {
+                  ...settings.endPage.groupUnlock,
+                  ...(payload.patch?.endPage?.groupUnlock ?? {})
+                }
               }
             };
             result = ok(settings);
@@ -285,17 +409,52 @@ export async function installWebExtensionMock(context: BrowserContext): Promise<
               planMode: {
                 enabled: payload.enabled ?? settings.planMode.enabled,
                 watchDurationMinutes:
-                  payload.watchDurationMinutes ?? settings.planMode.watchDurationMinutes
+                  payload.watchDurationMinutes ?? settings.planMode.watchDurationMinutes,
+                defaultCompletionMode:
+                  payload.defaultCompletionMode ?? settings.planMode.defaultCompletionMode,
+                autoCompleteOnStart:
+                  payload.autoCompleteOnStart ?? settings.planMode.autoCompleteOnStart
               }
             };
             result = ok({ settings: settings.planMode, queue: { schemaVersion: 1, items: [] } });
             break;
+          case "GET_PLAN_STATE":
+            result = ok({
+              settings: settings.planMode,
+              queue: { schemaVersion: 1, items: planItems }
+            });
+            break;
+          case "ADD_PLAN_ITEM": {
+            const url = new URL(String(payload.url));
+            planItems = [
+              ...planItems,
+              {
+                id: `plan:${planItems.length + 1}`,
+                url: url.href,
+                origin: url.origin,
+                title: payload.title?.trim() || url.hostname,
+                status: "pending",
+                order: planItems.length,
+                source: payload.source ?? "manual",
+                scheduledDurationMinutes: payload.scheduledDurationMinutes ?? 45,
+                completionMode: payload.completionMode ?? "flow",
+                addedAt: Date.now(),
+                completedAt: null
+              }
+            ];
+            result = ok({
+              settings: settings.planMode,
+              queue: { schemaVersion: 1, items: planItems }
+            });
+            break;
+          }
           case "GET_USAGE":
             result = ok({
               period: payload.period ?? "day",
               startDate: "2026-08-06",
               endDate: "2026-08-06",
               totalSeconds: 5_400,
+              byPeriod: { "period:home:all-day": 600 },
               byTarget: {
                 "module:bilibili:home": 600,
                 "module:bilibili:dynamic": 900,
@@ -318,6 +477,7 @@ export async function installWebExtensionMock(context: BrowserContext): Promise<
                     "module:bilibili:dynamic": 900,
                     "module:bilibili:bangumi": 3_900
                   },
+                  byPeriod: { "period:home:all-day": 600 },
                   bySection: {
                     home: 600,
                     dynamic: 900,
@@ -360,6 +520,7 @@ export async function installWebExtensionMock(context: BrowserContext): Promise<
               section: "home",
               blocked: true,
               reason: "blocked",
+              activePeriodId: "period:home:all-day",
               canRequestTemporaryAccess: true,
               temporaryAccessUsesRemaining: 3
             });
